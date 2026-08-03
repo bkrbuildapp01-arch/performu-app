@@ -1073,7 +1073,7 @@ const BASE_CATEGORIES = [{
   color: "indigo",
   defaultItems: ["Investasi Rutin", "Investasi Strategis"],
   range: [100, 2000],
-  decimals: 0,
+  decimals: 3,
   unit: "Rp Jt"
 }, {
   id: "prk",
@@ -3535,6 +3535,8 @@ function EditableNumberCell({
 }) {
   return /*#__PURE__*/React.createElement("input", {
     type: "number",
+    // step "any" agar angka desimal (mis. 0,001 pada Biaya Investasi) tidak ditolak browser.
+    step: "any",
     ref: inputRef,
     value: value === null || value === undefined ? "" : value,
     placeholder: "-",
@@ -4706,6 +4708,10 @@ const AKUMULASI_CATS = ["pemeliharaan", "administrasi", "investasi", "kimia", "l
 // Kategori berbasis Program Anggaran: sudah punya kolom akumulasi sendiri di Data Input
 // (akumTarget/akumRealisasi/akumForecast), jadi tidak perlu diakumulasikan ulang.
 const PROGRAM_AKUM_CATS = ["fisik", "prk"];
+// Kategori yang sub-tab "Akumulasi Bulanan"-nya memakai format Rekap (Bulan/Tahun per baris).
+const REKAP_AKUMULASI_CATS = ["investasi"];
+// Kategori tanpa tombol "Hitung Prognosa" (prognosa diisi manual sesuai kontrak/realisasi).
+const NO_HITUNG_PROGNOSA_CATS = ["investasi"];
 const CAPAIAN_ITEM_CATS = ["pemeliharaan", "administrasi", "investasi"];
 const CAPAIAN_PROGRAMAO_CATS = ["fisik", "prk"];
 const CAPAIAN_CATS = ["operasi", "kimia", "lainnya", "bisnis", ...CAPAIAN_ITEM_CATS, ...CAPAIAN_PROGRAMAO_CATS];
@@ -5695,7 +5701,10 @@ function BerandaPage({
 const DETAIL_LINE_COLORS = ["#059669", "#2563eb", "#d97706", "#dc2626", "#7c3aed", "#0891b2", "#db2777", "#65a30d"];
 function roundByDecimals(v, decimals) {
   if (v === null || v === undefined) return null;
-  return decimals === 0 ? Math.round(v) : round1(v);
+  if (decimals === null || decimals === undefined) return round1(v);
+  if (decimals === 0) return Math.round(v);
+  const f = Math.pow(10, decimals);
+  return Math.round(v * f) / f;
 }
 function estimateForecastSeries(currentSeries, priorYearSeries, decimals) {
   const n = currentSeries.length;
@@ -6589,6 +6598,94 @@ function FisikRekapTable({
     className: "text-[11px] text-slate-400 px-4 py-2.5 bg-slate-50/60 border-t border-slate-100"
   }, `Kolom Target/Realisasi/Prognosa dihitung otomatis dari data ${programLabel || "Program Anggaran Operasional"} dan dapat dikoreksi manual di sini. Kolom akumulasi dihitung otomatis dan tidak dapat diedit. Perubahan pada kolom "Realisasi Bulan" di tabel Program Anggaran akan menghitung ulang (refresh) nilai pada tabel ini.`));
 }
+// Tabel "Akumulasi Bulanan" bergaya Rekap (Bulan/Tahun per baris + kolom akumulasi), dipakai
+// oleh kategori yang butuh tampilan seperti "Rekap Fisik Pemeliharaan". Nilai per bulan adalah
+// TOTAL seluruh item pada tab Bulanan, lalu diakumulasikan Jan s.d. Des. Read-only.
+const REKAP_AKUMULASI_COLS = [{
+  key: "target",
+  label: "Target"
+}, {
+  key: "akumTarget",
+  label: "Akumulasi Target"
+}, {
+  key: "realisasi",
+  label: "Realisasi"
+}, {
+  key: "akumRealisasi",
+  label: "Akumulasi Realisasi"
+}, {
+  key: "forecast",
+  label: "Prognosa"
+}, {
+  key: "akumForecast",
+  label: "Akumulasi Prognosa"
+}];
+function buildRekapAkumulasiRows(cat, year, rows) {
+  let accT = null,
+    accR = null,
+    accF = null;
+  return cat.periods.map((p, i) => {
+    let t = null,
+      r = null,
+      f = null;
+    (rows || []).forEach(row => {
+      const tv = row[p + "Prognosa"];
+      const rv = row[p + "Realisasi"];
+      const fv = row[p + "Forecast"];
+      if (tv !== null && tv !== undefined) t = (t || 0) + tv;
+      if (rv !== null && rv !== undefined) r = (r || 0) + rv;
+      if (fv !== null && fv !== undefined) f = (f || 0) + fv;
+    });
+    if (t !== null) accT = (accT || 0) + t;
+    if (r !== null) accR = (accR || 0) + r;
+    if (f !== null) accF = (accF || 0) + f;
+    return {
+      id: `${cat.id}-${year}-rekap-${i}`,
+      bulan: `${p} ${year}`,
+      target: t,
+      akumTarget: t === null && accT === null ? null : accT,
+      realisasi: r,
+      akumRealisasi: r === null ? null : accR,
+      forecast: f,
+      akumForecast: f === null && accF === null ? null : accF
+    };
+  });
+}
+function RekapAkumulasiTable({
+  cat,
+  year,
+  rows
+}) {
+  const data = buildRekapAkumulasiRows(cat, year, rows);
+  const decimals = cat.decimals === undefined || cat.decimals === null ? 0 : cat.decimals;
+  const cellCls = "border-b border-slate-100 px-3 py-2 text-right tabular-nums text-slate-600";
+  return /*#__PURE__*/React.createElement("div", {
+    className: "overflow-x-auto border border-slate-100 rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,0.04)]"
+  }, /*#__PURE__*/React.createElement("table", {
+    className: "min-w-full text-sm border-collapse"
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+    className: "bg-slate-50/70 text-slate-500"
+  }, /*#__PURE__*/React.createElement("th", {
+    className: "border-b border-slate-200 px-3 py-2 text-left font-medium w-12"
+  }, "No"), /*#__PURE__*/React.createElement("th", {
+    className: "border-b border-slate-200 px-3 py-2 text-left font-medium"
+  }, "Bulan/Tahun"), REKAP_AKUMULASI_COLS.map(c => /*#__PURE__*/React.createElement("th", {
+    key: c.key,
+    className: "border-b border-l border-slate-200 px-3 py-2 text-right font-medium"
+  }, c.label)))), /*#__PURE__*/React.createElement("tbody", null, data.map((r, ridx) => /*#__PURE__*/React.createElement("tr", {
+    key: r.id,
+    className: "hover:bg-slate-50/60"
+  }, /*#__PURE__*/React.createElement("td", {
+    className: "border-b border-slate-100 px-3 py-1.5 text-slate-400"
+  }, ridx + 1), /*#__PURE__*/React.createElement("td", {
+    className: "border-b border-slate-100 px-3 py-1.5 text-slate-700 font-medium"
+  }, r.bulan), REKAP_AKUMULASI_COLS.map(c => /*#__PURE__*/React.createElement("td", {
+    key: c.key,
+    className: cellCls + " border-l" + (c.key === "akumRealisasi" ? " font-semibold text-slate-800" : "")
+  }, fmtNum(r[c.key], decimals))))))), /*#__PURE__*/React.createElement("p", {
+    className: "text-[11px] text-slate-400 px-4 py-2.5 bg-slate-50/60 border-t border-slate-100"
+  }, "Nilai per bulan adalah total seluruh item pada tab Bulanan; kolom akumulasi dihitung otomatis Jan s.d. Des dan tidak dapat diedit."));
+}
 function catTableSpec(cat) {
   if (cat.type === "monthlyGrouped") return {
     labelHeader: "Bulan/Tahun",
@@ -6998,7 +7095,7 @@ function AnalisaPage({
     year: year,
     rows: rows,
     onReplaceRows: newRows => replaceRows(cat.id, year, newRows)
-  }), !isProgramAOCat && !showCapaian && cat.id !== "nko" && /*#__PURE__*/React.createElement(HitungPrognosaButton, {
+  }), !isProgramAOCat && !showCapaian && cat.id !== "nko" && !NO_HITUNG_PROGNOSA_CATS.includes(cat.id) && /*#__PURE__*/React.createElement(HitungPrognosaButton, {
     cat: cat,
     rows: rows,
     priorYearRows: store[cat.id].byYear[year - 1] || null,
@@ -7071,7 +7168,11 @@ function AnalisaPage({
     kpiTargets: kimiaKpiTargetsForYear,
     onKpiTargetChange: (period, value) => onKimiaKpiTargetChange(year, period, value),
     visiblePeriods: visiblePeriods
-  }) : hasAkumulasiSubTab(curTabCfg) && pemSubTab === "akumulasi" ? /*#__PURE__*/React.createElement(ItemGroupedAkumulasiTable, {
+  }) : hasAkumulasiSubTab(curTabCfg) && pemSubTab === "akumulasi" ? REKAP_AKUMULASI_CATS.includes(cat.id) ? /*#__PURE__*/React.createElement(RekapAkumulasiTable, {
+    cat: cat,
+    year: year,
+    rows: rows
+  }) : /*#__PURE__*/React.createElement(ItemGroupedAkumulasiTable, {
     cat: cat,
     rows: rows,
     visiblePeriods: visiblePeriods
