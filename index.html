@@ -1299,10 +1299,76 @@ function computeMonthlyRowsFromProgramAO(programRows, year) {
     };
   });
 }
-function recomputeProgramAOCategory(programRows, catStore) {
+// Program Anggaran (AO/AI) disimpan PER TAHUN: store[programKey] = { [tahun]: rows[] }.
+// Format lama (array datar) tetap didukung dan otomatis dimigrasi berdasarkan tahun pada
+// kolom Bulan Target, supaya impor pada satu tahun tidak lagi menimpa data tahun lain.
+function programAORowYear(row) {
+  const t = monthLabelToIndex(row && row.bulanTarget) || monthLabelToIndex(row && row.bulanPrognosa) || monthLabelToIndex(row && row.bulanRealisasi);
+  return t && t.year ? t.year : null;
+}
+function normalizeProgramAOData(raw, years) {
+  const list = Array.isArray(years) ? years : [];
+  const out = {};
+  list.forEach(y => {
+    out[y] = [];
+  });
+  if (raw && !Array.isArray(raw) && typeof raw === "object") {
+    Object.keys(raw).forEach(k => {
+      if (Array.isArray(raw[k])) out[k] = raw[k];
+    });
+    return out;
+  }
+  const arr = Array.isArray(raw) ? raw : [];
+  const fallback = list.length ? list[list.length - 1] : null;
+  arr.forEach(r => {
+    const y = programAORowYear(r);
+    const key = y === null || y === undefined ? fallback : y;
+    if (key === null || key === undefined) return;
+    if (!out[key]) out[key] = [];
+    out[key].push(r);
+  });
+  return out;
+}
+function programAORowsForYear(programData, year) {
+  if (!programData) return [];
+  if (Array.isArray(programData)) return programData;
+  return programData[year] || [];
+}
+function allProgramAORows(programData) {
+  if (!programData) return [];
+  if (Array.isArray(programData)) return programData;
+  return Object.keys(programData).reduce((acc, k) => Array.isArray(programData[k]) ? acc.concat(programData[k]) : acc, []);
+}
+// Migrasi snapshot store lama (Program Anggaran masih berupa array datar) ke bentuk per tahun.
+function migrateProgramAOStore(store) {
+  if (!store || typeof store !== "object") return store;
+  let changed = false;
+  const next = { ...store };
+  Object.keys(PROGRAM_AO_SCHEME).forEach(catId => {
+    const key = PROGRAM_AO_SCHEME[catId].programKey;
+    const raw = store[key];
+    if (!Array.isArray(raw)) return;
+    const years = store[catId] && Array.isArray(store[catId].years) ? store[catId].years : [...BASE_YEARS];
+    next[key] = normalizeProgramAOData(raw, years);
+    changed = true;
+  });
+  return changed ? next : store;
+}
+function setProgramAORowsForYear(programData, years, year, rows) {
+  const base = normalizeProgramAOData(programData, years);
+  return {
+    ...base,
+    [year]: rows
+  };
+}
+// Perhitungan bulanan tetap memakai GABUNGAN baris seluruh tahun karena label bulan sudah
+// memuat tahun (mis. "Feb 2026"), sehingga program yang direalisasikan di tahun berikutnya
+// tetap terhitung pada tahun realisasinya.
+function recomputeProgramAOCategory(programData, catStore) {
+  const allRows = allProgramAORows(programData);
   const byYear = {};
   catStore.years.forEach(y => {
-    byYear[y] = computeMonthlyRowsFromProgramAO(programRows, y);
+    byYear[y] = computeMonthlyRowsFromProgramAO(allRows, y);
   });
   return {
     ...catStore,
@@ -1320,10 +1386,10 @@ function buildInitialStore() {
       store[cat.id].byYear[y] = buildRows(cat, y);
     });
   });
-  const fisikProgramAO = buildInitialFisikProgramAO();
+  const fisikProgramAO = normalizeProgramAOData(buildInitialFisikProgramAO(), store.fisik.years);
   store.fisikProgramAO = fisikProgramAO;
   store.fisik = recomputeProgramAOCategory(fisikProgramAO, store.fisik);
-  const prkProgramAO = buildInitialPrkProgramAO();
+  const prkProgramAO = normalizeProgramAOData(buildInitialPrkProgramAO(), store.prk.years);
   store.prkProgramAO = prkProgramAO;
   store.prk = recomputeProgramAOCategory(prkProgramAO, store.prk);
   store.kimiaKpiTargets = {};
@@ -1344,6 +1410,35 @@ function fmtNum(v, decimals) {
     maximumFractionDigits: decimals
   });
 }
+// ---------------------------------------------------------------------------
+// "Akhir Periode" (semester berjalan) — harus SAMA dengan angka pada Data Input.
+//
+// Aturan:
+// - Kategori akumulasi (biaya, kimia, lainnya, Fisik/PRK): nilai akhir periode adalah nilai
+//   KUMULATIF pada bulan terakhir semester, persis kolom Akumulasi di Data Input.
+// - Kategori non-akumulasi (NKO, Kinerja Operasi/EAF/EFOR/PSST, Kinerja Bisnis Proses): KPI
+//   berupa persentase/skor, sehingga nilai akhir periode adalah NILAI PADA BULAN TERAKHIR
+//   semester — bukan penjumlahan nilai bulanan (menjumlahkan persen menghasilkan angka
+//   tak bermakna seperti 500%).
+// ---------------------------------------------------------------------------
+function semesterBoundsFor(monthIdx, totalMonths) {
+  const total = totalMonths || 12;
+  const half = Math.round(total / 2);
+  const inFirst = monthIdx < half;
+  return {
+    semStart: inFirst ? 0 : half,
+    semEnd: inFirst ? half : total
+  };
+}
+// Nilai terakhir yang tersedia pada rentang semester (mundur dari bulan terakhir semester),
+// supaya kartu tidak menampilkan "-"/0 ketika bulan-bulan akhir semester belum terisi.
+function lastValueInRange(rows, semStart, semEnd, pick) {
+  for (let k = semEnd - 1; k >= semStart; k--) {
+    const v = pick(rows[k], k);
+    if (v !== null && v !== undefined) return v;
+  }
+  return null;
+}
 function computeMonthlyGroupedTrend(rows, cat, groupKey) {
   const g = cat.groups.find(x => x.key === groupKey) || cat.groups[0];
   const withData = rows.map((r, i) => ({
@@ -1357,10 +1452,9 @@ function computeMonthlyGroupedTrend(rows, cat, groupKey) {
   const prevVal = prev ? prev.r[g.key + "Realisasi"] : null;
   const delta = prevVal !== null ? latest - prevVal : 0;
   const pct = prevVal ? delta / prevVal * 100 : 0;
-  const semStart = last.i < 6 ? 0 : 6;
-  const semEnd = last.i < 6 ? 6 : 12;
-  const targetAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r[g.key + "Prognosa"] || 0), 0);
-  const prognosaAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r[g.key + "Forecast"] || 0), 0);
+  const { semStart, semEnd } = semesterBoundsFor(last.i, rows.length);
+  const targetAkhir = lastValueInRange(rows, semStart, semEnd, r => r && r[g.key + "Prognosa"]);
+  const prognosaAkhir = lastValueInRange(rows, semStart, semEnd, r => r && r[g.key + "Forecast"]);
   const targetLatest = last.r[g.key + "Prognosa"];
   return {
     latest,
@@ -1462,10 +1556,11 @@ function computeMonthlySimpleTrend(rows, cat) {
   const prevVal = prev ? prev.r.realisasi : null;
   const delta = prevVal !== null ? latest - prevVal : 0;
   const pct = prevVal ? delta / prevVal * 100 : 0;
-  const semStart = last.i < 6 ? 0 : 6;
-  const semEnd = last.i < 6 ? 6 : 12;
-  const targetAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r.target || 0), 0);
-  const prognosaAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r.forecast || 0), 0);
+  const { semStart, semEnd } = semesterBoundsFor(last.i, rows.length);
+  // Fisik Pemeliharaan / PRK Investasi Terkontrak punya kolom akumulasi sendiri di Data Input.
+  const hasAkum = rows.some(r => r && (r.akumTarget !== undefined || r.akumForecast !== undefined));
+  const targetAkhir = hasAkum ? lastValueInRange(rows, semStart, semEnd, r => r && r.akumTarget) : rows.slice(semStart, semEnd).reduce((s, r) => s + (r.target || 0), 0);
+  const prognosaAkhir = hasAkum ? lastValueInRange(rows, semStart, semEnd, r => r && r.akumForecast) : rows.slice(semStart, semEnd).reduce((s, r) => s + (r.forecast || 0), 0);
   const targetLatest = last.r.target;
   return {
     latest,
@@ -1502,9 +1597,7 @@ function computeItemGroupedTrend(rows, cat) {
   const prevVal = prev ? prev.v : null;
   const delta = prevVal !== null ? latest - prevVal : 0;
   const pct = prevVal ? delta / prevVal * 100 : 0;
-  const half = periods.length / 2;
-  const semStart = last.i < half ? 0 : half;
-  const semEnd = last.i < half ? half : periods.length;
+  const { semStart, semEnd } = semesterBoundsFor(last.i, periods.length);
   let targetAkhir = 0;
   let prognosaAkhir = 0;
   // Untuk kategori akumulasi (AKUMULASI_CATS), nilai akhir periode adalah nilai KUMULATIF
@@ -1518,11 +1611,14 @@ function computeItemGroupedTrend(rows, cat) {
       prognosaAkhir += r[lastPeriodKey + "Forecast"] || 0;
     });
   } else {
-    rows.forEach(r => {
-      for (let k = semStart; k < semEnd; k++) {
-        targetAkhir += r[periods[k] + "Prognosa"] || 0;
-        prognosaAkhir += r[periods[k] + "Forecast"] || 0;
-      }
+    // Non-akumulasi: pakai nilai bulan terakhir semester (jumlah antar item), bukan jumlah antar bulan.
+    const idxT = lastValueInRange(periods, semStart, semEnd, (p, k) => rows.some(r => r[p + "Prognosa"] !== null && r[p + "Prognosa"] !== undefined) ? k : null);
+    const idxF = lastValueInRange(periods, semStart, semEnd, (p, k) => rows.some(r => r[p + "Forecast"] !== null && r[p + "Forecast"] !== undefined) ? k : null);
+    if (idxT !== null) rows.forEach(r => {
+      targetAkhir += r[periods[idxT] + "Prognosa"] || 0;
+    });
+    if (idxF !== null) rows.forEach(r => {
+      prognosaAkhir += r[periods[idxF] + "Forecast"] || 0;
     });
   }
   let targetLatestSum = 0,
@@ -1637,10 +1733,9 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
     const prevVal = prevRow ? (isProgFallback ? prevRow[g.key + "Forecast"] : prevRow[g.key + "Realisasi"]) : null;
     const delta = prevVal !== null && prevVal !== undefined ? latest - prevVal : 0;
     const pct = prevVal ? delta / prevVal * 100 : 0;
-    const semStart = monthIdx < 6 ? 0 : 6;
-    const semEnd = monthIdx < 6 ? 6 : 12;
-    const targetAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r[g.key + "Prognosa"] || 0), 0);
-    const prognosaAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r[g.key + "Forecast"] || 0), 0);
+    const { semStart, semEnd } = semesterBoundsFor(monthIdx, rows.length);
+    const targetAkhir = lastValueInRange(rows, semStart, semEnd, r => r && r[g.key + "Prognosa"]);
+    const prognosaAkhir = lastValueInRange(rows, semStart, semEnd, r => r && r[g.key + "Forecast"]);
     const targetLatest = row[g.key + "Prognosa"];
     const mode = getCapaianMode(capaianModes, g.key);
     const pair = resolveCapaianPair(mode, capaianManualValues, g.key, row.bulan, realisasi, forecastValue, targetLatest);
@@ -1665,15 +1760,23 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
     const realisasi = row.realisasi;
     const isProgFallback = realisasi === null || realisasi === undefined;
     if (isProgFallback && (row.forecast === null || row.forecast === undefined)) return computeTrend(cat, rows, groupKey);
-    const latest = isProgFallback ? row.forecast : realisasi;
+    // Mode Akumulasi Bulanan (Fisik Pemeliharaan / PRK Investasi Terkontrak): angka utama kartu
+    // mengikuti kolom akumulasi pada Data Input.
+    const useAkum = PROGRAM_AKUM_CATS.includes(cat.id) && pemMode === "akumulasi" && (row.akumTarget !== undefined || row.akumRealisasi !== undefined);
+    const pickVal = (r, fallbackToForecast) => {
+      if (!r) return null;
+      if (useAkum) return fallbackToForecast ? r.akumForecast : r.akumRealisasi;
+      return fallbackToForecast ? r.forecast : r.realisasi;
+    };
+    const latest = pickVal(row, isProgFallback);
     const prevRow = monthIdx > 0 ? rows[monthIdx - 1] : null;
-    const prevVal = prevRow ? (isProgFallback ? prevRow.forecast : prevRow.realisasi) : null;
+    const prevVal = pickVal(prevRow, isProgFallback);
     const delta = prevVal !== null && prevVal !== undefined ? latest - prevVal : 0;
     const pct = prevVal ? delta / prevVal * 100 : 0;
-    const semStart = monthIdx < 6 ? 0 : 6;
-    const semEnd = monthIdx < 6 ? 6 : 12;
-    const targetAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r.target || 0), 0);
-    const prognosaAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r.forecast || 0), 0);
+    const { semStart, semEnd } = semesterBoundsFor(monthIdx, rows.length);
+    const hasAkum = rows.some(r => r && (r.akumTarget !== undefined || r.akumForecast !== undefined));
+    const targetAkhir = hasAkum ? lastValueInRange(rows, semStart, semEnd, r => r && r.akumTarget) : rows.slice(semStart, semEnd).reduce((s, r) => s + (r.target || 0), 0);
+    const prognosaAkhir = hasAkum ? lastValueInRange(rows, semStart, semEnd, r => r && r.akumForecast) : rows.slice(semStart, semEnd).reduce((s, r) => s + (r.forecast || 0), 0);
     const targetLatest = row.target;
     const mode = getCapaianMode(capaianModes, cat.id);
     const pair = resolveCapaianPair(mode, capaianManualValues, cat.id, row.bulan, realisasi, row.forecast, targetLatest);
@@ -1771,8 +1874,7 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
     }
     const delta = prevHas ? sum - prevSum : 0;
     const pct = prevHas && prevSum ? delta / prevSum * 100 : 0;
-    const semStart = monthIdx < 6 ? 0 : 6;
-    const semEnd = monthIdx < 6 ? 6 : 12;
+    const { semStart, semEnd } = semesterBoundsFor(monthIdx, periods.length);
     let targetAkhir = 0;
     let prognosaAkhir = 0;
     const mode = getCapaianMode(capaianModes, cat.id);
@@ -1787,11 +1889,14 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
         prognosaAkhir += r[lastPeriodKey + "Forecast"] || 0;
       });
     } else {
-      rows.forEach(r => {
-        for (let k = semStart; k < semEnd; k++) {
-          targetAkhir += r[periods[k] + "Prognosa"] || 0;
-          prognosaAkhir += r[periods[k] + "Forecast"] || 0;
-        }
+      // Non-akumulasi: nilai bulan terakhir semester (dijumlah antar item), bukan antar bulan.
+      const idxT = lastValueInRange(periods, semStart, semEnd, (pp, k) => rows.some(r => r[pp + "Prognosa"] !== null && r[pp + "Prognosa"] !== undefined) ? k : null);
+      const idxF = lastValueInRange(periods, semStart, semEnd, (pp, k) => rows.some(r => r[pp + "Forecast"] !== null && r[pp + "Forecast"] !== undefined) ? k : null);
+      if (idxT !== null) rows.forEach(r => {
+        targetAkhir += r[periods[idxT] + "Prognosa"] || 0;
+      });
+      if (idxF !== null) rows.forEach(r => {
+        prognosaAkhir += r[periods[idxF] + "Forecast"] || 0;
       });
     }
     let targetLatestSum = 0,
@@ -1950,7 +2055,8 @@ function StatCard({
   monthIdx,
   capaianModes,
   capaianManualValues,
-  pemMode
+  pemMode,
+  onAnalisa
 }) {
   const trend = useMemo(() => computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaianManualValues, pemMode), [cat, rows, groupKey, monthIdx, capaianModes, capaianManualValues, pemMode]);
   const numberColorClass = trend && trend.isProgFallback ? "text-slate-400" : "text-slate-900";
@@ -1987,10 +2093,25 @@ function StatCard({
   })), /*#__PURE__*/React.createElement("p", {
     className: `${compact ? "text-xs" : "text-[13px]"} font-semibold leading-snug truncate ${accent ? "text-emerald-700" : "text-slate-700"}`,
     title: title
-  }, title)), trend && trend.monthLabel && /*#__PURE__*/React.createElement("span", {
+  }, title)), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-1 flex-shrink-0"
+  }, trend && trend.monthLabel && /*#__PURE__*/React.createElement("span", {
     className: `text-[10px] font-semibold px-2 py-1 rounded-full flex-shrink-0 transition-all duration-200 ${trend.isProgFallback ? "bg-slate-100 text-slate-400" : "bg-slate-100 text-slate-400"}`,
     title: trend.isProgFallback ? "Belum ada data realisasi untuk periode ini, menampilkan data prognosa" : undefined
-  }, trend.monthLabel, trend.isProgFallback ? " (Prognosa)" : "")), trend ? compact && !fillHeight ? /*#__PURE__*/React.createElement("div", {
+  }, trend.monthLabel, trend.isProgFallback ? " (Prognosa)" : ""), onAnalisa && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    "aria-label": "Analisa",
+    title: `Lihat analisa ${trend && trend.monthLabel ? trend.monthLabel : "periode terpilih"}`,
+    onClick: e => {
+      e.stopPropagation();
+      onAnalisa(trend);
+    },
+    className: "w-6 h-6 rounded-full bg-slate-100 text-slate-400 hover:bg-[#0F2A3F] hover:text-white flex items-center justify-center transition flex-shrink-0"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "clipboard",
+    size: 12,
+    strokeWidth: 2.2
+  })))), trend ? compact && !fillHeight ? /*#__PURE__*/React.createElement("div", {
     className: "flex items-center justify-between gap-3"
   }, /*#__PURE__*/React.createElement("div", {
     className: "flex items-baseline gap-2 min-w-0"
@@ -2004,8 +2125,9 @@ function StatCard({
   }))), /*#__PURE__*/React.createElement("div", {
     className: "text-right flex-shrink-0"
   }, /*#__PURE__*/React.createElement("p", {
-    className: "text-[10px] text-slate-400"
-  }, "Prognosa"), /*#__PURE__*/React.createElement("p", {
+    className: "text-[10px] text-slate-400",
+    title: "Prognosa akhir periode (semester berjalan) — sesuai kolom akumulasi/prognosa pada Data Input"
+  }, "Prognosa Akhir Periode"), /*#__PURE__*/React.createElement("p", {
     className: "text-xs font-bold text-slate-700 tabular-nums flex items-center justify-end gap-1"
   }, /*#__PURE__*/React.createElement(AnimatedNumber, {
     value: round1(trend.prognosaAkhir),
@@ -4559,6 +4681,9 @@ function BisnisProsesCard({
   })));
 }
 const AKUMULASI_CATS = ["pemeliharaan", "administrasi", "investasi", "kimia", "lainnya"];
+// Kategori berbasis Program Anggaran: sudah punya kolom akumulasi sendiri di Data Input
+// (akumTarget/akumRealisasi/akumForecast), jadi tidak perlu diakumulasikan ulang.
+const PROGRAM_AKUM_CATS = ["fisik", "prk"];
 const CAPAIAN_ITEM_CATS = ["pemeliharaan", "administrasi", "investasi"];
 const CAPAIAN_PROGRAMAO_CATS = ["fisik", "prk"];
 const CAPAIAN_CATS = ["operasi", "kimia", "lainnya", "bisnis", ...CAPAIAN_ITEM_CATS, ...CAPAIAN_PROGRAMAO_CATS];
@@ -5152,6 +5277,36 @@ function BerandaPage({
     if (!metric || metric.id !== metric.catId) return metric;
     return { ...metric, title: tabLabel(metric.catId, metric.cat), shortLabel: tabShortLabel(metric.catId, metric.cat) };
   };
+  // Pop-up Analisa per kartu: menampilkan Catatan Analisa & Root Cause KPI pada bulan
+  // yang sedang dipilih di Beranda, dengan pintasan ke menu Analisa lengkap.
+  const [analisaKpi, setAnalisaKpi] = useState(null);
+  const [analisaNoteText, setAnalisaNoteText] = useState("");
+  const [analisaRootCauseText, setAnalisaRootCauseText] = useState("");
+  const openAnalisaFor = (metricId, trend) => {
+    const m = applyRename(getMetric(metricId));
+    if (!m || !trend) return;
+    const noteYear = selectedYears[m.catId];
+    const key = noteKeyFor(metricId, trend.monthLabel, noteYear);
+    const notes = loadAnalisaNotes();
+    const roots = loadRootCauseNotes();
+    setAnalisaNoteText(notes[key] || "");
+    setAnalisaRootCauseText(roots[key] || "");
+    const capaian = trend.capaianPct !== null && trend.capaianPct !== undefined ? trend.capaianPct : trend.targetLatest ? round1(trend.latest / trend.targetLatest * 100) : null;
+    setAnalisaKpi({
+      key: "card-" + metricId,
+      metricId,
+      title: m.title,
+      icon: m.icon,
+      color: m.color,
+      unit: m.cat.unit || "",
+      decimals: m.cat.decimals,
+      latest: trend.latest,
+      target: trend.targetLatest,
+      capaianPct: capaian,
+      monthLabel: trend.monthLabel,
+      noteYear
+    });
+  };
   const operasiTabCfg = tabCfgById.operasi;
   const operasiEnabledGroups = operasiTabCfg ? orderedEnabled(operasiTabCfg.columns).map(c => c.key) : ["eaf", "efor", "psst"];
   const isQuickEnabled = id => {
@@ -5210,11 +5365,25 @@ function BerandaPage({
   // sudut pandang "akhir periode" saat sedang melihat kategori tersebut. Ini hanya berlaku
   // sementara selama kategori tsb aktif sebagai main chart; toggle global itu sendiri TIDAK
   // diubah, dan begitu pindah ke NKO atau ke kategori biaya, kembali mengikuti toggle global.
-  const FORCE_AKUMULASI_MAIN_IDS = ["nko", "eaf", "efor", "psst", "fisik", "prk"];
+  const FORCE_AKUMULASI_MAIN_IDS = ["nko", "eaf", "efor", "psst"];
   const forceAkumulasiForOthers = FORCE_AKUMULASI_MAIN_IDS.includes(mainMetricId);
   const getPemModeFor = catId => forceAkumulasiForOthers ? "akumulasi" : pemMode;
   const mainSeriesBase = useMemo(() => activeLainnyaRow ? buildItemRowSeries(mainMetric.cat, activeLainnyaRow) : buildChartSeries(mainMetric.cat, mainRows, mainMetric.groupKey), [mainMetricId, mainRows, activeLainnyaRow]);
-  const mainSeries = useMemo(() => AKUMULASI_CATS.includes(mainMetric.id) && pemMode === "akumulasi" ? accumulateChartSeries(mainSeriesBase, mainMetric.cat.decimals) : mainSeriesBase, [mainSeriesBase, pemMode, mainMetricId]);
+  // Fisik Pemeliharaan & PRK Investasi Terkontrak sudah punya kolom akumulasi sendiri di
+  // Data Input (akumTarget/akumRealisasi/akumForecast), jadi mode Akumulasi Bulanan cukup
+  // membaca kolom tersebut — tidak perlu diakumulasikan ulang.
+  const mainSeries = useMemo(() => {
+    if (PROGRAM_AKUM_CATS.includes(mainMetric.id)) {
+      if (pemMode !== "akumulasi") return mainSeriesBase;
+      return mainRows.map(r => ({
+        bulan: String(r.bulan).split(" ")[0],
+        Prognosa: r.akumTarget === undefined ? null : r.akumTarget,
+        Realisasi: r.realisasi === null || r.realisasi === undefined ? null : r.akumRealisasi,
+        Forecast: r.akumForecast === undefined ? null : r.akumForecast
+      }));
+    }
+    return AKUMULASI_CATS.includes(mainMetric.id) && pemMode === "akumulasi" ? accumulateChartSeries(mainSeriesBase, mainMetric.cat.decimals) : mainSeriesBase;
+  }, [mainSeriesBase, mainRows, pemMode, mainMetricId]);
   const pemDetailData = useMemo(() => {
     if (!AKUMULASI_CATS.includes(mainMetric.id)) return null;
     const cat = mainMetric.cat;
@@ -5247,7 +5416,7 @@ function BerandaPage({
       };
     });
   }, [mainMetricId, mainRows, pemMode]);
-  const pemModeToggle = AKUMULASI_CATS.includes(mainMetric.id) ? /*#__PURE__*/React.createElement("div", {
+  const pemModeToggle = AKUMULASI_CATS.includes(mainMetric.id) || PROGRAM_AKUM_CATS.includes(mainMetric.id) ? /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-1.5 flex-wrap"
   }, [["bulanan", "Bulanan"], ["akumulasi", "Akumulasi Bulanan"]].map(([k, lbl]) => /*#__PURE__*/React.createElement("button", {
     key: k,
@@ -5266,7 +5435,7 @@ function BerandaPage({
     series: mainSeries,
     headerControls: pemModeToggle,
     detailData: pemDetailData,
-    dataTitleSuffix: AKUMULASI_CATS.includes(mainMetric.id) ? pemMode === "akumulasi" ? "Akumulasi" : "Bulanan" : null,
+    dataTitleSuffix: AKUMULASI_CATS.includes(mainMetric.id) || PROGRAM_AKUM_CATS.includes(mainMetric.id) ? pemMode === "akumulasi" ? "Akumulasi" : "Bulanan" : null,
     year: selectedYears[mainMetric.catId],
     title: mainMetric.title,
     shortLabel: mainMetric.shortLabel,
@@ -5300,6 +5469,7 @@ function BerandaPage({
       capaianModes: store.capaianModes,
       capaianManualValues: store.capaianManualValues,
       pemMode: getPemModeFor(id),
+      onAnalisa: t => openAnalisaFor(id, t),
       onClick: () => setMainMetricId(id)
     });
   }) : /*#__PURE__*/React.createElement(React.Fragment, null, isTabEnabled("nko") && /*#__PURE__*/React.createElement(StatCard, {
@@ -5316,6 +5486,7 @@ function BerandaPage({
     capaianModes: store.capaianModes,
     capaianManualValues: store.capaianManualValues,
     pemMode: getPemModeFor("nko"),
+    onAnalisa: t => openAnalisaFor("nko", t),
     onClick: () => setMainMetricId("nko")
   }), enabledQuickIds.filter(id => id !== "nko").map((id, idx) => {
     const m = ALL_METRICS[id];
@@ -5333,6 +5504,7 @@ function BerandaPage({
       capaianModes: store.capaianModes,
       capaianManualValues: store.capaianManualValues,
       pemMode: getPemModeFor(id),
+      onAnalisa: t => openAnalisaFor(id, t),
       onClick: () => setMainMetricId(id)
     });
   }))), /*#__PURE__*/React.createElement(AnalisaKinerjaCarousel, {
@@ -5365,6 +5537,7 @@ function BerandaPage({
       capaianModes: store.capaianModes,
       capaianManualValues: store.capaianManualValues,
       pemMode: getPemModeFor(id),
+      onAnalisa: t => openAnalisaFor(id, t),
       onClick: () => setMainMetricId(id)
     });
   })), isTabEnabled("lainnya") && renderLainnyaCard()), isTabEnabled("bisnis") && /*#__PURE__*/React.createElement("div", {
@@ -5380,7 +5553,18 @@ function BerandaPage({
       if (setActiveCatId) setActiveCatId("bisnis");
       if (setActiveMenu) setActiveMenu("data-input");
     }
-  }))));
+  }))), analisaKpi && /*#__PURE__*/React.createElement(KpiDetailModal, {
+    kpi: analisaKpi,
+    note: analisaNoteText,
+    rootCauseNote: analisaRootCauseText,
+    onClose: () => setAnalisaKpi(null),
+    onOpenFull: () => {
+      const id = analisaKpi.metricId;
+      setAnalisaKpi(null);
+      if (setAnalisaHighlightId) setAnalisaHighlightId(id);
+      if (setActiveMenu) setActiveMenu("analisa");
+    }
+  }));
   function renderLainnyaCard() {
     return /*#__PURE__*/React.createElement("div", {
     className: "rounded-2xl bg-transparent p-4"
@@ -6543,6 +6727,7 @@ function importProgramAORowsFromAoa(catId, aoa) {
 }
 function ProgramAOExportImportButtons({
   catId,
+  year,
   programLabel,
   rows,
   onReplaceRows,
@@ -6574,7 +6759,7 @@ function ProgramAOExportImportButtons({
           alert("File Excel kosong.");
           return;
         }
-        if (!window.confirm(`Impor akan mengganti seluruh daftar ${itemLabel} saat ini dengan isi file. Lanjutkan?`)) return;
+        if (!window.confirm(`Impor akan mengganti daftar ${itemLabel} tahun ${year} dengan isi file. Data tahun lain tidak terpengaruh. Lanjutkan?`)) return;
         onReplaceRows(importProgramAORowsFromAoa(catId, aoa));
       } catch (err) {
         alert("Gagal membaca file Excel: " + (err && err.message ? err.message : err));
@@ -6637,7 +6822,7 @@ function AnalisaPage({
   const [showCapaian, setShowCapaian] = useState(false);
   const programAOConfig = PROGRAM_AO_SCHEME[cat.id];
   const isProgramAOCat = !!programAOConfig;
-  const programAORows = isProgramAOCat ? store[programAOConfig.programKey] : [];
+  const programAORows = isProgramAOCat ? programAORowsForYear(store[programAOConfig.programKey], year) : [];
   const kimiaKpiTargetsForYear = store.kimiaKpiTargets && store.kimiaKpiTargets[year] ? store.kimiaKpiTargets[year] : {};
   const monthYearOptions = useMemo(() => {
     if (!isProgramAOCat) return [];
@@ -6738,8 +6923,9 @@ function AnalisaPage({
   }), isProgramAOCat && !showCapaian && /*#__PURE__*/React.createElement(ProgramAOExportImportButtons, {
     catId: cat.id,
     programLabel: programAOConfig.programLabel,
+    year: year,
     rows: programAORows,
-    onReplaceRows: newRows => onProgramAOReplaceRows(cat.id, newRows),
+    onReplaceRows: newRows => onProgramAOReplaceRows(cat.id, year, newRows),
     itemColumnLabel: cat.id === "prk" ? "Item Program AI" : "Item Program AO"
   }))), isProgramAOCat ? /*#__PURE__*/React.createElement(React.Fragment, null, !(CAPAIAN_PROGRAMAO_CATS.includes(cat.id) && showCapaian) && /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-2 flex-wrap"
@@ -6757,9 +6943,9 @@ function AnalisaPage({
   }) : fisikSubTab === "programAO" ? /*#__PURE__*/React.createElement(ProgramAOTable, {
     rows: programAORows,
     monthOptions: monthYearOptions,
-    onCell: (ridx, field, value) => onProgramAOCell(cat.id, ridx, field, value),
-    onAddRow: () => onProgramAOAddRow(cat.id),
-    onDeleteRow: ridx => onProgramAODeleteRow(cat.id, ridx),
+    onCell: (ridx, field, value) => onProgramAOCell(cat.id, year, ridx, field, value),
+    onAddRow: () => onProgramAOAddRow(cat.id, year),
+    onDeleteRow: ridx => onProgramAODeleteRow(cat.id, year, ridx),
     itemColumnLabel: cat.id === "prk" ? "Item Program AI" : "Item Program AO"
   }) : /*#__PURE__*/React.createElement(FisikRekapTable, {
     cat: cat,
@@ -8606,7 +8792,7 @@ function InsightCard({
       let dataContext = null;
       const programConfig = catId ? PROGRAM_AO_SCHEME[catId] : null;
       if (programConfig && store && store[programConfig.programKey]) {
-        const delayed = findDelayedPrograms(store[programConfig.programKey], trend && trend.monthLabel);
+        const delayed = findDelayedPrograms(allProgramAORows(store[programConfig.programKey]), trend && trend.monthLabel);
         dataContext = { type: "programAO", programLabel: programConfig.programLabel, delayed };
       } else if (itemHistory && itemHistory.length) {
         dataContext = { type: "itemHistory", history: itemHistory };
@@ -9158,7 +9344,7 @@ function PerformUApp() {
         return;
       }
       const remoteStore = rows[0].payload;
-      if (remoteStore && typeof remoteStore === "object") setStore(remoteStore);
+      if (remoteStore && typeof remoteStore === "object") setStore(migrateProgramAOStore(remoteStore));
       performuStoreLoadedRef.current = true;
     }).catch(() => { performuStoreLoadedRef.current = true; })
       .then(() => { if (!cancelled) markBootStep("store"); });
@@ -9235,7 +9421,7 @@ function PerformUApp() {
     const nextYear = Math.max(...cur.years) + 1;
     const cat = CATEGORIES.find(c => c.id === catId);
     const programAOConfig = PROGRAM_AO_SCHEME[catId];
-    const newRows = programAOConfig ? computeMonthlyRowsFromProgramAO(store[programAOConfig.programKey], nextYear) : buildRows(cat, nextYear).map(r => {
+    const newRows = programAOConfig ? computeMonthlyRowsFromProgramAO(allProgramAORows(store[programAOConfig.programKey]), nextYear) : buildRows(cat, nextYear).map(r => {
       const blank = {
         ...r
       };
@@ -9268,6 +9454,10 @@ function PerformUApp() {
           [nextYear]: kpiTargets
         };
       }
+      if (programAOConfig) {
+        // Tahun baru dimulai dengan daftar Program Anggaran kosong (tidak menyalin tahun lain).
+        next[programAOConfig.programKey] = setProgramAORowsForYear(prev[programAOConfig.programKey], curPrev.years, nextYear, []);
+      }
       return next;
     });
     setSelectedYears(prev => ({
@@ -9299,6 +9489,13 @@ function PerformUApp() {
       const newKpiTargets = { ...store.kimiaKpiTargets };
       delete newKpiTargets[year];
       next.kimiaKpiTargets = newKpiTargets;
+    }
+    const delProgramCfg = PROGRAM_AO_SCHEME[catId];
+    if (delProgramCfg) {
+      const progData = { ...normalizeProgramAOData(store[delProgramCfg.programKey], cur.years) };
+      delete progData[year];
+      next[delProgramCfg.programKey] = progData;
+      next[catId] = recomputeProgramAOCategory(progData, next[catId]);
     }
     setStore(next);
     setSelectedYears(prev => ({
@@ -9334,6 +9531,13 @@ function PerformUApp() {
       const newKpiTargets = { ...store.kimiaKpiTargets };
       delete newKpiTargets[year];
       next.kimiaKpiTargets = newKpiTargets;
+    }
+    const delProgramCfg = PROGRAM_AO_SCHEME[catId];
+    if (delProgramCfg) {
+      const progData = { ...normalizeProgramAOData(store[delProgramCfg.programKey], cur.years) };
+      delete progData[year];
+      next[delProgramCfg.programKey] = progData;
+      next[catId] = recomputeProgramAOCategory(progData, next[catId]);
     }
     setStore(next);
     setSelectedYears(prev => ({
@@ -9475,61 +9679,74 @@ function PerformUApp() {
       };
     });
   };
-  const updateProgramAOCell = (catId, ridx, field, value) => {
+  // Seluruh handler Program Anggaran bekerja pada bucket TAHUN yang sedang dibuka saja,
+  // sehingga menambah/mengubah/menghapus/mengimpor tidak memengaruhi tahun lain.
+  const updateProgramAOCell = (catId, year, ridx, field, value) => {
     const config = PROGRAM_AO_SCHEME[catId];
     if (!config) return;
     setStore(prev => {
-      const rows = prev[config.programKey].map((r, i) => i === ridx ? {
+      const years = prev[catId].years;
+      const curRows = programAORowsForYear(prev[config.programKey], year);
+      const rows = curRows.map((r, i) => i === ridx ? {
         ...r,
         [field]: value
       } : r);
+      const nextData = setProgramAORowsForYear(prev[config.programKey], years, year, rows);
       return {
         ...prev,
-        [config.programKey]: rows,
-        [catId]: recomputeProgramAOCategory(rows, prev[catId])
+        [config.programKey]: nextData,
+        [catId]: recomputeProgramAOCategory(nextData, prev[catId])
       };
     });
   };
-  const addProgramAORow = catId => {
+  const addProgramAORow = (catId, year) => {
     const config = PROGRAM_AO_SCHEME[catId];
     if (!config) return null;
     const newId = `${catId}AO-new-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     setStore(prev => {
-      const rows = [...prev[config.programKey], {
+      const years = prev[catId].years;
+      const rows = [...programAORowsForYear(prev[config.programKey], year), {
         id: newId,
         item: "",
         bulanTarget: "",
         bulanRealisasi: "",
         bulanPrognosa: ""
       }];
+      const nextData = setProgramAORowsForYear(prev[config.programKey], years, year, rows);
       return {
         ...prev,
-        [config.programKey]: rows,
-        [catId]: recomputeProgramAOCategory(rows, prev[catId])
+        [config.programKey]: nextData,
+        [catId]: recomputeProgramAOCategory(nextData, prev[catId])
       };
     });
     return newId;
   };
-  const deleteProgramAORow = (catId, ridx) => {
+  const deleteProgramAORow = (catId, year, ridx) => {
     const config = PROGRAM_AO_SCHEME[catId];
     if (!config) return;
     setStore(prev => {
-      const rows = prev[config.programKey].filter((r, i) => i !== ridx);
+      const years = prev[catId].years;
+      const rows = programAORowsForYear(prev[config.programKey], year).filter((r, i) => i !== ridx);
+      const nextData = setProgramAORowsForYear(prev[config.programKey], years, year, rows);
       return {
         ...prev,
-        [config.programKey]: rows,
-        [catId]: recomputeProgramAOCategory(rows, prev[catId])
+        [config.programKey]: nextData,
+        [catId]: recomputeProgramAOCategory(nextData, prev[catId])
       };
     });
   };
-  const replaceProgramAORows = (catId, rows) => {
+  const replaceProgramAORows = (catId, year, rows) => {
     const config = PROGRAM_AO_SCHEME[catId];
     if (!config) return;
-    setStore(prev => ({
-      ...prev,
-      [config.programKey]: rows,
-      [catId]: recomputeProgramAOCategory(rows, prev[catId])
-    }));
+    setStore(prev => {
+      const years = prev[catId].years;
+      const nextData = setProgramAORowsForYear(prev[config.programKey], years, year, rows);
+      return {
+        ...prev,
+        [config.programKey]: nextData,
+        [catId]: recomputeProgramAOCategory(nextData, prev[catId])
+      };
+    });
   };
   const updateKimiaKpiTarget = (year, period, value) => {
     setStore(prev => ({
