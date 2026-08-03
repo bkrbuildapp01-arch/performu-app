@@ -270,6 +270,20 @@ function performuPushNkoYear(year, structure) {
   );
 }
 
+// Deleting a year is a discrete, confirmed action (not free-form typing),
+// so it fires immediately instead of going through the 800ms debounce —
+// otherwise a quick refresh right after confirming the delete can race the
+// pending PUT/DELETE and the year reappears on reload. Also cancels any
+// still-pending debounced PUT for that year so a stale save can't recreate
+// the row right after the delete lands.
+function performuDeleteNkoYear(year) {
+  const key = `nko-${year}`;
+  if (performuSyncTimers[key]) { clearTimeout(performuSyncTimers[key]); delete performuSyncTimers[key]; }
+  return performuApiFetch(`/nko/${year}`, { method: "DELETE" }).catch(err => {
+    console.warn(`[PerformU sync] gagal menghapus tahun NKO ${year} di server, tetap terhapus lokal:`, err.message);
+  });
+}
+
 /* ---- Data Kinerja sync ---- */
 
 function performuPushDataKinerja(categoryId, year, subTab, payload) {
@@ -279,6 +293,21 @@ function performuPushDataKinerja(categoryId, year, subTab, payload) {
       body: JSON.stringify({ categoryId, year, subTab: subTab || null, payload })
     })
   );
+}
+
+// Same as performuPushDataKinerja but skips the 800ms debounce — for
+// discrete, confirmed actions (e.g. deleting a year) where a quick refresh
+// right after the action could otherwise race the pending save and the
+// deleted data would reappear on reload.
+function performuPushDataKinerjaNow(categoryId, year, subTab, payload) {
+  const key = `dk-${categoryId}-${year}-${subTab || ""}`;
+  if (performuSyncTimers[key]) { clearTimeout(performuSyncTimers[key]); delete performuSyncTimers[key]; }
+  return performuApiFetch("/data-kinerja", {
+    method: "PUT",
+    body: JSON.stringify({ categoryId, year, subTab: subTab || null, payload })
+  }).catch(err => {
+    console.warn(`[PerformU sync] ${key} gagal (immediate), data tetap aman di localStorage:`, err.message);
+  });
 }
 
 async function performuPullAllDataKinerja() {
@@ -7477,6 +7506,7 @@ function LaporanPage({ nkoState, onChangeNkoState, selectedYears, store, readOnl
     delete newByYear[year];
     onChangeNkoState({ ...nkoState, years: newYears, byYear: newByYear });
     setYearState(fallbackYear);
+    performuDeleteNkoYear(year);
   }
 
   const tabs = readOnly
@@ -9152,32 +9182,29 @@ function PerformUApp() {
     if (!window.confirm(`Yakin ingin menghapus data tahun ${year} pada kategori "${cat ? cat.title : catId}"? Data yang sudah dihapus tidak dapat dikembalikan.`)) return;
     const newYears = cur.years.filter(y => y !== year);
     const fallbackYear = newYears.includes(2026) ? 2026 : newYears[newYears.length - 1];
-    setStore(prev => {
-      const curPrev = prev[catId];
-      const newByYear = {
-        ...curPrev.byYear
-      };
-      delete newByYear[year];
-      const next = {
-        ...prev,
-        [catId]: {
-          years: curPrev.years.filter(y => y !== year),
-          byYear: newByYear
-        }
-      };
-      if (catId === "kimia") {
-        const newKpiTargets = {
-          ...prev.kimiaKpiTargets
-        };
-        delete newKpiTargets[year];
-        next.kimiaKpiTargets = newKpiTargets;
+    const newByYear = { ...cur.byYear };
+    delete newByYear[year];
+    const next = {
+      ...store,
+      [catId]: {
+        years: cur.years.filter(y => y !== year),
+        byYear: newByYear
       }
-      return next;
-    });
+    };
+    if (catId === "kimia") {
+      const newKpiTargets = { ...store.kimiaKpiTargets };
+      delete newKpiTargets[year];
+      next.kimiaKpiTargets = newKpiTargets;
+    }
+    setStore(next);
     setSelectedYears(prev => ({
       ...prev,
       [catId]: fallbackYear
     }));
+    // Push immediately (bypass debounce) — deleting a year is a discrete,
+    // confirmed action, so a quick refresh right after shouldn't be able to
+    // race the save and bring the deleted year back.
+    performuPushDataKinerjaNow("_full_store", 0, null, next);
   };
   const deleteYearFor = (catId, year) => {
     const cat = CATEGORIES.find(c => c.id === catId);
@@ -9190,32 +9217,27 @@ function PerformUApp() {
     if (!window.confirm(`Yakin ingin menghapus data tahun ${year} pada kategori "${cat ? cat.title : catId}"? Data yang sudah dihapus tidak dapat dikembalikan.`)) return;
     const newYears = cur.years.filter(y => y !== year);
     const fallbackYear = selectedYears[catId] === year ? (newYears.includes(2026) ? 2026 : newYears[newYears.length - 1]) : selectedYears[catId];
-    setStore(prev => {
-      const curPrev = prev[catId];
-      const newByYear = {
-        ...curPrev.byYear
-      };
-      delete newByYear[year];
-      const next = {
-        ...prev,
-        [catId]: {
-          years: curPrev.years.filter(y => y !== year),
-          byYear: newByYear
-        }
-      };
-      if (catId === "kimia") {
-        const newKpiTargets = {
-          ...prev.kimiaKpiTargets
-        };
-        delete newKpiTargets[year];
-        next.kimiaKpiTargets = newKpiTargets;
+    const newByYear = { ...cur.byYear };
+    delete newByYear[year];
+    const next = {
+      ...store,
+      [catId]: {
+        years: cur.years.filter(y => y !== year),
+        byYear: newByYear
       }
-      return next;
-    });
+    };
+    if (catId === "kimia") {
+      const newKpiTargets = { ...store.kimiaKpiTargets };
+      delete newKpiTargets[year];
+      next.kimiaKpiTargets = newKpiTargets;
+    }
+    setStore(next);
     setSelectedYears(prev => ({
       ...prev,
       [catId]: fallbackYear
     }));
+    // Push immediately (bypass debounce) — see deleteYear above.
+    performuPushDataKinerjaNow("_full_store", 0, null, next);
   };
   const updateCell = (catId, year, ridx, field, value) => {
     setStore(prev => {
