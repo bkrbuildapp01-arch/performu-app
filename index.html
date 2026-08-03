@@ -323,7 +323,6 @@ async function performuPullSettingsBundle() {
 }
 
 const NKO_STORAGE_KEY = "performu_nko_structure_v1";
-const DATA_STORE_STORAGE_KEY = "performu_data_store_v1";
 const AUTH_STORAGE_KEY = "performu_auth_session_v1";
 const NKO_FORMULA_TYPES = [{
   key: "normal",
@@ -722,28 +721,6 @@ async function performuMergeRemoteNkoStructure(localState) {
   const years = Array.from(new Set([...(localState.years || []), ...(remote.years || [])])).sort((a, b) => a - b);
   const byYear = { ...localState.byYear, ...remote.byYear };
   return { years, byYear };
-}
-/* ---- Data Kinerja (store) local persistence ----
-   `store` sebelumnya HANYA disinkronkan ke backend (performuPushDataKinerja),
-   tanpa localStorage sama sekali. Kalau backend belum terpasang/tidak bisa
-   dihubungi, seluruh data yang diisi/diimpor di Data Input akan HILANG saat
-   halaman di-refresh. loadDataStore/saveDataStore menambahkan localStorage
-   sebagai penyimpanan utama yang instan (local-first), sama seperti pola
-   yang sudah dipakai untuk struktur NKO, terlepas dari status backend. */
-function loadDataStore() {
-  try {
-    const raw = window.localStorage.getItem(DATA_STORE_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object" && parsed.nko && parsed.nko.byYear) return parsed;
-    }
-  } catch (e) {}
-  return buildInitialStore();
-}
-function saveDataStore(store) {
-  try {
-    window.localStorage.setItem(DATA_STORE_STORAGE_KEY, JSON.stringify(store));
-  } catch (e) {}
 }
 // AUTH_ACCOUNTS hardcoded dihapus - login sekarang lewat backend (lihat
 // performuLogin() di blok API client di atas). checkAuthCredentials() diganti
@@ -1338,7 +1315,7 @@ function fmtNum(v, decimals) {
     maximumFractionDigits: decimals
   });
 }
-function computeMonthlyGroupedTrend(rows, cat, groupKey, capaianModes, capaianManualValues) {
+function computeMonthlyGroupedTrend(rows, cat, groupKey) {
   const g = cat.groups.find(x => x.key === groupKey) || cat.groups[0];
   const withData = rows.map((r, i) => ({
     i,
@@ -1353,16 +1330,9 @@ function computeMonthlyGroupedTrend(rows, cat, groupKey, capaianModes, capaianMa
   const pct = prevVal ? delta / prevVal * 100 : 0;
   const semStart = last.i < 6 ? 0 : 6;
   const semEnd = last.i < 6 ? 6 : 12;
-  // NKO/EAF/EFOR/PSST adalah metrik kumulatif-berjalan (nilai bulan Juni/Desember SUDAH
-  // merepresentasikan capaian akumulasi s.d. bulan tsb), bukan nilai bulanan yang aditif.
-  // Maka "Akhir Periode" harus memakai nilai pada bulan terakhir semester, BUKAN hasil
-  // penjumlahan tiap bulan (yang akan salah besar untuk nilai berskala 70-100/persen).
-  const lastSemRow = rows[semEnd - 1] || last.r;
-  const targetAkhir = lastSemRow[g.key + "Prognosa"] != null ? lastSemRow[g.key + "Prognosa"] : 0;
-  const prognosaAkhir = lastSemRow[g.key + "Forecast"] != null ? lastSemRow[g.key + "Forecast"] : 0;
+  const targetAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r[g.key + "Prognosa"] || 0), 0);
+  const prognosaAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r[g.key + "Forecast"] || 0), 0);
   const targetLatest = last.r[g.key + "Prognosa"];
-  const mode = getCapaianMode(capaianModes, g.key);
-  const pair = resolveCapaianPair(mode, capaianManualValues, g.key, last.r.bulan, latest, last.r[g.key + "Forecast"], targetLatest);
   return {
     latest,
     delta,
@@ -1371,9 +1341,7 @@ function computeMonthlyGroupedTrend(rows, cat, groupKey, capaianModes, capaianMa
     targetAkhir,
     targetLatest,
     monthLabel: last.r.bulan,
-    isSum: false,
-    isProgFallback: false,
-    capaianPct: pair.capaianRealisasi
+    isSum: false
   };
 }
 function fmtPct(v, decimals = 1) {
@@ -1453,40 +1421,23 @@ function computeCapaianRows(cat, rows, capaianModes, capaianManualValues) {
     return out;
   });
 }
-function computeMonthlySimpleTrend(rows, cat, capaianModes, capaianManualValues, pemMode) {
-  // Fisik Pemeliharaan & PRK Investasi Terkontrak punya mode "Bulanan" (nilai per bulan,
-  // aditif) dan "Akumulasi Bulanan" (nilai kumulatif s.d. bulan tsb, sudah tersedia di
-  // kolom akum*). Kategori lain yang memakai type monthlySimple tetap pakai kolom biasa.
-  const useAkum = MONTHLY_SIMPLE_AKUM_CATS.includes(cat.id) && pemMode === "akumulasi";
-  const realisasiKey = useAkum ? "akumRealisasi" : "realisasi";
-  const targetKey = useAkum ? "akumTarget" : "target";
-  const forecastKey = useAkum ? "akumForecast" : "forecast";
+function computeMonthlySimpleTrend(rows, cat) {
   const withData = rows.map((r, i) => ({
     i,
     r
-  })).filter(x => x.r[realisasiKey] !== null && x.r[realisasiKey] !== undefined);
+  })).filter(x => x.r.realisasi !== null);
   if (withData.length === 0) return null;
   const last = withData[withData.length - 1];
   const prev = withData.length > 1 ? withData[withData.length - 2] : null;
-  const latest = last.r[realisasiKey];
-  const prevVal = prev ? prev.r[realisasiKey] : null;
+  const latest = last.r.realisasi;
+  const prevVal = prev ? prev.r.realisasi : null;
   const delta = prevVal !== null ? latest - prevVal : 0;
   const pct = prevVal ? delta / prevVal * 100 : 0;
   const semStart = last.i < 6 ? 0 : 6;
   const semEnd = last.i < 6 ? 6 : 12;
-  let targetAkhir, prognosaAkhir;
-  if (useAkum) {
-    // Nilai akumulasi bulan terakhir semester SUDAH kumulatif, jangan dijumlah ulang.
-    const lastSemRow = rows[semEnd - 1] || last.r;
-    targetAkhir = lastSemRow[targetKey] != null ? lastSemRow[targetKey] : 0;
-    prognosaAkhir = lastSemRow[forecastKey] != null ? lastSemRow[forecastKey] : 0;
-  } else {
-    targetAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r[targetKey] || 0), 0);
-    prognosaAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r[forecastKey] || 0), 0);
-  }
-  const targetLatest = last.r[targetKey];
-  const mode = getCapaianMode(capaianModes, cat.id);
-  const pair = resolveCapaianPair(mode, capaianManualValues, cat.id, last.r.bulan, latest, last.r[forecastKey], targetLatest);
+  const targetAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r.target || 0), 0);
+  const prognosaAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r.forecast || 0), 0);
+  const targetLatest = last.r.target;
   return {
     latest,
     delta,
@@ -1495,12 +1446,10 @@ function computeMonthlySimpleTrend(rows, cat, capaianModes, capaianManualValues,
     targetAkhir,
     targetLatest,
     monthLabel: last.r.bulan,
-    isSum: false,
-    isProgFallback: false,
-    capaianPct: pair.capaianRealisasi
+    isSum: false
   };
 }
-function computeItemGroupedTrend(rows, cat, capaianModes, capaianManualValues) {
+function computeItemGroupedTrend(rows, cat) {
   const periods = cat.periods;
   const sums = periods.map(p => {
     let sum = 0,
@@ -1557,35 +1506,21 @@ function computeItemGroupedTrend(rows, cat, capaianModes, capaianManualValues) {
     }
   });
   const itemYearStr = rows[0] && rows[0].id ? String(rows[0].id).split("-")[0] : "";
-  let forecastLatestSum = 0,
-    forecastLatestHas = false;
-  rows.forEach(r => {
-    const fv = r[periods[last.i] + "Forecast"];
-    if (fv !== null && fv !== undefined) {
-      forecastLatestSum += fv;
-      forecastLatestHas = true;
-    }
-  });
-  const targetLatest = targetLatestHas ? targetLatestSum : null;
-  const mode = getCapaianMode(capaianModes, cat.id);
-  const pair = resolveCapaianPair(mode, capaianManualValues, cat.id, periods[last.i], latest, forecastLatestHas ? forecastLatestSum : null, targetLatest);
   return {
     latest,
     delta,
     pct,
     prognosaAkhir,
     targetAkhir,
-    targetLatest,
+    targetLatest: targetLatestHas ? targetLatestSum : null,
     monthLabel: itemYearStr ? `${periods[last.i]} ${itemYearStr}` : periods[last.i],
-    isSum: true,
-    isProgFallback: false,
-    capaianPct: pair.capaianRealisasi
+    isSum: true
   };
 }
-function computeTrend(cat, rows, groupKey, capaianModes, capaianManualValues, pemMode) {
-  if (cat.type === "monthlyGrouped") return computeMonthlyGroupedTrend(rows, cat, groupKey, capaianModes, capaianManualValues);
-  if (cat.type === "monthlySimple") return computeMonthlySimpleTrend(rows, cat, capaianModes, capaianManualValues, pemMode);
-  return computeItemGroupedTrend(rows, cat, capaianModes, capaianManualValues);
+function computeTrend(cat, rows, groupKey) {
+  if (cat.type === "monthlyGrouped") return computeMonthlyGroupedTrend(rows, cat, groupKey);
+  if (cat.type === "monthlySimple") return computeMonthlySimpleTrend(rows, cat);
+  return computeItemGroupedTrend(rows, cat);
 }
 const COLOR_HEX = {
   emerald: "#008C4F",
@@ -1659,15 +1594,15 @@ function buildItemRowSeries(cat, row) {
   }));
 }
 function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaianManualValues, pemMode) {
-  if (monthIdx === null || monthIdx === undefined) return computeTrend(cat, rows, groupKey, capaianModes, capaianManualValues, pemMode);
+  if (monthIdx === null || monthIdx === undefined) return computeTrend(cat, rows, groupKey);
   if (cat.type === "monthlyGrouped") {
-    if (!rows[monthIdx]) return computeTrend(cat, rows, groupKey, capaianModes, capaianManualValues, pemMode);
+    if (!rows[monthIdx]) return computeTrend(cat, rows, groupKey);
     const g = cat.groups.find(x => x.key === groupKey) || cat.groups[0];
     const row = rows[monthIdx];
     const realisasi = row[g.key + "Realisasi"];
     const isProgFallback = realisasi === null || realisasi === undefined;
     const forecastValue = row[g.key + "Forecast"];
-    if (isProgFallback && (forecastValue === null || forecastValue === undefined)) return computeTrend(cat, rows, groupKey, capaianModes, capaianManualValues, pemMode);
+    if (isProgFallback && (forecastValue === null || forecastValue === undefined)) return computeTrend(cat, rows, groupKey);
     const latest = isProgFallback ? forecastValue : realisasi;
     const prevRow = monthIdx > 0 ? rows[monthIdx - 1] : null;
     const prevVal = prevRow ? (isProgFallback ? prevRow[g.key + "Forecast"] : prevRow[g.key + "Realisasi"]) : null;
@@ -1675,11 +1610,8 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
     const pct = prevVal ? delta / prevVal * 100 : 0;
     const semStart = monthIdx < 6 ? 0 : 6;
     const semEnd = monthIdx < 6 ? 6 : 12;
-    // Nilai kumulatif-berjalan (lihat computeMonthlyGroupedTrend): Akhir Periode = nilai
-    // pada bulan terakhir semester, bukan hasil penjumlahan tiap bulan.
-    const lastSemRowMG = rows[semEnd - 1] || row;
-    const targetAkhir = lastSemRowMG[g.key + "Prognosa"] != null ? lastSemRowMG[g.key + "Prognosa"] : 0;
-    const prognosaAkhir = lastSemRowMG[g.key + "Forecast"] != null ? lastSemRowMG[g.key + "Forecast"] : 0;
+    const targetAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r[g.key + "Prognosa"] || 0), 0);
+    const prognosaAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r[g.key + "Forecast"] || 0), 0);
     const targetLatest = row[g.key + "Prognosa"];
     const mode = getCapaianMode(capaianModes, g.key);
     const pair = resolveCapaianPair(mode, capaianManualValues, g.key, row.bulan, realisasi, forecastValue, targetLatest);
@@ -1699,34 +1631,23 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
     };
   }
   if (cat.type === "monthlySimple") {
-    if (!rows[monthIdx]) return computeTrend(cat, rows, groupKey, capaianModes, capaianManualValues, pemMode);
+    if (!rows[monthIdx]) return computeTrend(cat, rows, groupKey);
     const row = rows[monthIdx];
-    const useAkum = MONTHLY_SIMPLE_AKUM_CATS.includes(cat.id) && pemMode === "akumulasi";
-    const realisasiKey = useAkum ? "akumRealisasi" : "realisasi";
-    const targetKey = useAkum ? "akumTarget" : "target";
-    const forecastKey = useAkum ? "akumForecast" : "forecast";
-    const realisasi = row[realisasiKey];
+    const realisasi = row.realisasi;
     const isProgFallback = realisasi === null || realisasi === undefined;
-    if (isProgFallback && (row[forecastKey] === null || row[forecastKey] === undefined)) return computeTrend(cat, rows, groupKey, capaianModes, capaianManualValues, pemMode);
-    const latest = isProgFallback ? row[forecastKey] : realisasi;
+    if (isProgFallback && (row.forecast === null || row.forecast === undefined)) return computeTrend(cat, rows, groupKey);
+    const latest = isProgFallback ? row.forecast : realisasi;
     const prevRow = monthIdx > 0 ? rows[monthIdx - 1] : null;
-    const prevVal = prevRow ? (isProgFallback ? prevRow[forecastKey] : prevRow[realisasiKey]) : null;
+    const prevVal = prevRow ? (isProgFallback ? prevRow.forecast : prevRow.realisasi) : null;
     const delta = prevVal !== null && prevVal !== undefined ? latest - prevVal : 0;
     const pct = prevVal ? delta / prevVal * 100 : 0;
     const semStart = monthIdx < 6 ? 0 : 6;
     const semEnd = monthIdx < 6 ? 6 : 12;
-    let targetAkhir, prognosaAkhir;
-    if (useAkum) {
-      const lastSemRowMS = rows[semEnd - 1] || row;
-      targetAkhir = lastSemRowMS[targetKey] != null ? lastSemRowMS[targetKey] : 0;
-      prognosaAkhir = lastSemRowMS[forecastKey] != null ? lastSemRowMS[forecastKey] : 0;
-    } else {
-      targetAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r[targetKey] || 0), 0);
-      prognosaAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r[forecastKey] || 0), 0);
-    }
-    const targetLatest = row[targetKey];
+    const targetAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r.target || 0), 0);
+    const prognosaAkhir = rows.slice(semStart, semEnd).reduce((s, r) => s + (r.forecast || 0), 0);
+    const targetLatest = row.target;
     const mode = getCapaianMode(capaianModes, cat.id);
-    const pair = resolveCapaianPair(mode, capaianManualValues, cat.id, row.bulan, realisasi, row[forecastKey], targetLatest);
+    const pair = resolveCapaianPair(mode, capaianManualValues, cat.id, row.bulan, realisasi, row.forecast, targetLatest);
     const capaianPct = isProgFallback ? pair.capaianPrognosa : pair.capaianRealisasi;
     return {
       latest,
@@ -1745,7 +1666,7 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
   if (cat.type === "itemGrouped" && cat.periods && cat.periods.length === 12) {
     const periods = cat.periods;
     const p = periods[monthIdx];
-    if (!p) return computeTrend(cat, rows, groupKey, capaianModes, capaianManualValues, pemMode);
+    if (!p) return computeTrend(cat, rows, groupKey);
     // Untuk kategori akumulasi (AKUMULASI_CATS), nilai yang ditampilkan pada kartu mengikuti
     // pilihan mode pada grafik (bulanan/akumulasi). Data Prognosa (Forecast) SELALU mengikuti
     // akumulasi walau mode bulanan dipilih, karena prognosa merepresentasikan proyeksi akhir
@@ -1784,7 +1705,7 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
           }
         });
       }
-      if (!forecastHas) return computeTrend(cat, rows, groupKey, capaianModes, capaianManualValues, pemMode);
+      if (!forecastHas) return computeTrend(cat, rows, groupKey);
       sum = forecastSum;
       isProgFallback = true;
     }
@@ -1885,7 +1806,7 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
       capaianPct
     };
   }
-  return computeTrend(cat, rows, groupKey, capaianModes, capaianManualValues, pemMode);
+  return computeTrend(cat, rows, groupKey);
 }
 function AnimatedNumber({
   value,
@@ -4572,9 +4493,6 @@ function BisnisProsesCard({
   })));
 }
 const AKUMULASI_CATS = ["pemeliharaan", "administrasi", "investasi", "kimia", "lainnya"];
-// Kategori bertipe monthlySimple yang punya mode Bulanan/Akumulasi Bulanan (datanya sudah
-// menyediakan kolom akumTarget/akumRealisasi/akumForecast selain kolom bulanan biasa).
-const MONTHLY_SIMPLE_AKUM_CATS = ["fisik", "prk"];
 const CAPAIAN_ITEM_CATS = ["pemeliharaan", "administrasi", "investasi"];
 const CAPAIAN_PROGRAMAO_CATS = ["fisik", "prk"];
 const CAPAIAN_CATS = ["operasi", "kimia", "lainnya", "bisnis", ...CAPAIAN_ITEM_CATS, ...CAPAIAN_PROGRAMAO_CATS];
@@ -5151,18 +5069,6 @@ function BerandaPage({
   setAnalisaHighlightId
 }) {
   const [mainMetricId, setMainMetricId] = useState("nko");
-  // Satu state tahun global untuk seluruh halaman Beranda: grafik utama dan SEMUA kartu
-  // (NKO, EAF/EFOR/PSST, Fisik/PRK, kartu biaya, Lainnya, Bisnis Proses) mengikuti tahun ini,
-  // terlepas dari kategori mana yang sedang jadi grafik utama. Ini terpisah dari selectedYears
-  // per-kategori yang dipakai di menu Data Kinerja, supaya navigasi tahun di sana tidak
-  // terpengaruh oleh Beranda dan sebaliknya.
-  const [berandaYear, setBerandaYear] = useState(() => selectedYears["nko"] || 2026);
-  const berandaRowsFor = catIdArg => {
-    if (catIdArg === "nko") return nkoComputeMonthlyRows(nkoState, store, berandaYear);
-    const catStore = store[catIdArg];
-    if (!catStore) return [];
-    return catStore.byYear[berandaYear] || catStore.byYear[selectedYears[catIdArg]] || [];
-  };
   const tabCfgById = useMemo(() => {
     const m = {};
     (uiConfig && uiConfig.tabs ? uiConfig.tabs : []).forEach(t => {
@@ -5198,8 +5104,8 @@ function BerandaPage({
     }
   }, [mainMetricId, enabledQuickIds.join(","), gridExtraIds.join(",")]);
   const [lainnyaActiveId, setLainnyaActiveId] = useState(null);
-  const lainnyaRows = store.lainnya ? store.lainnya.byYear[berandaYear] || store.lainnya.byYear[selectedYears.lainnya] || [] : [];
-  const lainnyaYear = berandaYear;
+  const lainnyaRows = store.lainnya ? store.lainnya.byYear[selectedYears.lainnya] || [] : [];
+  const lainnyaYear = selectedYears.lainnya;
   const lainnyaBadgeLabel = useMemo(() => {
     if (selectedMonthIdx !== null && selectedMonthIdx !== undefined && MONTHS[selectedMonthIdx]) return `${MONTHS[selectedMonthIdx]} ${lainnyaYear}`;
     let latestIdx = -1;
@@ -5224,7 +5130,7 @@ function BerandaPage({
     description: `Melacak capaian ${activeLainnyaRow.label} dari waktu ke waktu dan membandingkannya dengan prognosa setiap bulan.`
   } : applyRename(getMetric(mainMetricId) || ALL_METRICS.nko);
   const rowsFor = (catId, y) => catId === "nko" ? nkoComputeMonthlyRows(nkoState, store, y) : store[catId].byYear[y];
-  const mainRows = activeLainnyaRow ? [activeLainnyaRow] : berandaRowsFor(mainMetric.catId);
+  const mainRows = activeLainnyaRow ? [activeLainnyaRow] : rowsFor(mainMetric.catId, selectedYears[mainMetric.catId]);
   // Mode bulanan/akumulasi adalah SATU state global yang berlaku untuk seluruh kategori biaya
   // sekaligus (Pemeliharaan, Administrasi, Kimia, Investasi, Lainnya). Mengubah mode di satu
   // kategori akan langsung berlaku untuk semua kategori biaya lainnya juga. Toggle hanya
@@ -5242,22 +5148,7 @@ function BerandaPage({
   const forceAkumulasiForOthers = FORCE_AKUMULASI_MAIN_IDS.includes(mainMetricId);
   const getPemModeFor = catId => forceAkumulasiForOthers ? "akumulasi" : pemMode;
   const mainSeriesBase = useMemo(() => activeLainnyaRow ? buildItemRowSeries(mainMetric.cat, activeLainnyaRow) : buildChartSeries(mainMetric.cat, mainRows, mainMetric.groupKey), [mainMetricId, mainRows, activeLainnyaRow]);
-  const mainSeries = useMemo(() => {
-    if (AKUMULASI_CATS.includes(mainMetric.id) && pemMode === "akumulasi") {
-      return accumulateChartSeries(mainSeriesBase, mainMetric.cat.decimals);
-    }
-    // Fisik Pemeliharaan & PRK Investasi Terkontrak sudah punya kolom akumulasi sendiri
-    // (akumTarget/akumRealisasi/akumForecast), tidak perlu diakumulasikan ulang.
-    if (MONTHLY_SIMPLE_AKUM_CATS.includes(mainMetric.id) && pemMode === "akumulasi" && !activeLainnyaRow) {
-      return mainRows.map(r => ({
-        bulan: r.bulan.split(" ")[0],
-        Prognosa: r.akumTarget,
-        Realisasi: r.akumRealisasi,
-        Forecast: r.akumForecast
-      }));
-    }
-    return mainSeriesBase;
-  }, [mainSeriesBase, pemMode, mainMetricId, mainRows, activeLainnyaRow]);
+  const mainSeries = useMemo(() => AKUMULASI_CATS.includes(mainMetric.id) && pemMode === "akumulasi" ? accumulateChartSeries(mainSeriesBase, mainMetric.cat.decimals) : mainSeriesBase, [mainSeriesBase, pemMode, mainMetricId]);
   const pemDetailData = useMemo(() => {
     if (!AKUMULASI_CATS.includes(mainMetric.id)) return null;
     const cat = mainMetric.cat;
@@ -5290,7 +5181,7 @@ function BerandaPage({
       };
     });
   }, [mainMetricId, mainRows, pemMode]);
-  const pemModeToggle = AKUMULASI_CATS.includes(mainMetric.id) || MONTHLY_SIMPLE_AKUM_CATS.includes(mainMetric.id) ? /*#__PURE__*/React.createElement("div", {
+  const pemModeToggle = AKUMULASI_CATS.includes(mainMetric.id) ? /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-1.5 flex-wrap"
   }, [["bulanan", "Bulanan"], ["akumulasi", "Akumulasi Bulanan"]].map(([k, lbl]) => /*#__PURE__*/React.createElement("button", {
     key: k,
@@ -5309,8 +5200,8 @@ function BerandaPage({
     series: mainSeries,
     headerControls: pemModeToggle,
     detailData: pemDetailData,
-    dataTitleSuffix: AKUMULASI_CATS.includes(mainMetric.id) || MONTHLY_SIMPLE_AKUM_CATS.includes(mainMetric.id) ? pemMode === "akumulasi" ? "Akumulasi" : "Bulanan" : null,
-    year: berandaYear,
+    dataTitleSuffix: AKUMULASI_CATS.includes(mainMetric.id) ? pemMode === "akumulasi" ? "Akumulasi" : "Bulanan" : null,
+    year: selectedYears[mainMetric.catId],
     title: mainMetric.title,
     shortLabel: mainMetric.shortLabel,
     description: mainMetric.description,
@@ -5319,11 +5210,8 @@ function BerandaPage({
     lineColor: mainMetric.lineColor,
     decimals: mainMetric.cat.decimals,
     years: store[mainMetric.catId].years,
-    selectedYear: berandaYear,
-    onSelectYear: y => {
-      setBerandaYear(y);
-      setYear(mainMetric.catId, y);
-    },
+    selectedYear: selectedYears[mainMetric.catId],
+    onSelectYear: y => setYear(mainMetric.catId, y),
     onActiveChange: setSelectedMonthIdx
   }), /*#__PURE__*/React.createElement("div", {
     key: isTopChipMain ? "side-compact" : "side-mixed",
@@ -5333,7 +5221,7 @@ function BerandaPage({
     return /*#__PURE__*/React.createElement(StatCard, {
       key: id,
       cat: m.cat,
-      rows: berandaRowsFor(m.catId),
+      rows: rowsFor(m.catId, selectedYears[m.catId]),
       groupKey: m.groupKey,
       titleOverride: m.title,
       iconOverride: m.icon,
@@ -5350,7 +5238,7 @@ function BerandaPage({
     });
   }) : /*#__PURE__*/React.createElement(React.Fragment, null, isTabEnabled("nko") && /*#__PURE__*/React.createElement(StatCard, {
     cat: ALL_METRICS.nko.cat,
-    rows: berandaRowsFor(ALL_METRICS.nko.catId),
+    rows: rowsFor(ALL_METRICS.nko.catId, selectedYears[ALL_METRICS.nko.catId]),
     groupKey: ALL_METRICS.nko.groupKey,
     titleOverride: tabLabel("nko", ALL_METRICS.nko.cat),
     iconOverride: ALL_METRICS.nko.icon,
@@ -5368,7 +5256,7 @@ function BerandaPage({
     return /*#__PURE__*/React.createElement(StatCard, {
       key: id,
       cat: m.cat,
-      rows: berandaRowsFor(m.catId),
+      rows: store[m.catId].byYear[selectedYears[m.catId]],
       groupKey: m.groupKey,
       titleOverride: m.title,
       iconOverride: m.icon,
@@ -5399,7 +5287,7 @@ function BerandaPage({
     return /*#__PURE__*/React.createElement(StatCard, {
       key: id,
       cat: m.cat,
-      rows: berandaRowsFor(m.catId),
+      rows: store[m.catId].byYear[selectedYears[m.catId]],
       groupKey: m.groupKey,
       titleOverride: m.title,
       iconOverride: m.icon,
@@ -5416,7 +5304,7 @@ function BerandaPage({
   })), isTabEnabled("lainnya") && renderLainnyaCard()), isTabEnabled("bisnis") && /*#__PURE__*/React.createElement("div", {
     className: "lg:col-span-2"
   }, /*#__PURE__*/React.createElement(BisnisProsesCard, {
-    rows: berandaRowsFor(ALL_METRICS.bisnis.catId),
+    rows: store[ALL_METRICS.bisnis.catId].byYear[selectedYears[ALL_METRICS.bisnis.catId]],
     unit: ALL_METRICS.bisnis.cat.unit || "",
     titleOverride: tabLabel("bisnis", ALL_METRICS.bisnis.cat),
     openIdx: bisnisOpenIdx,
@@ -9070,7 +8958,7 @@ function LoginPage({ onLogin }) {
 }
 function PerformUApp() {
   const [authUser, setAuthUser] = useState(() => loadAuthSession());
-  const [store, setStore] = useState(() => loadDataStore());
+  const [store, setStore] = useState(() => buildInitialStore());
   const [activeMenu, setActiveMenu] = useState("beranda");
   const [activeCatId, setActiveCatId] = useState(CATEGORIES[0].id);
   const [selectedYears, setSelectedYears] = useState(() => {
@@ -9091,11 +8979,32 @@ function PerformUApp() {
   // Saat user sudah login, tarik struktur NKO terbaru dari backend (kalau
   // ada) dan gabungkan ke atas state lokal. Tidak menimpa kalau backend
   // belum bisa dihubungi (offline-safe).
+  //
+  // Kalau server BELUM punya struktur sama sekali (akun baru / migrasi
+  // pertama kali dari localStorage), dan yang login adalah admin, langsung
+  // dorong struktur lokal ke server saat itu juga. Sebelumnya push hanya
+  // terjadi saat ada edit (addYear/updateStructure), jadi data yang sudah
+  // ada di localStorage sejak sebelum backend terpasang tidak pernah
+  // benar-benar tersimpan ke server sampai admin mengubah sesuatu — user
+  // lain login dan melihat server kosong padahal admin "sudah" punya data
+  // (di localStorage-nya sendiri).
   useEffect(() => {
     if (!authUser) return;
     let cancelled = false;
-    performuMergeRemoteNkoStructure(nkoState).then(merged => {
-      if (!cancelled) setNkoState(merged);
+    performuPullNkoStructure().then(remote => {
+      if (cancelled) return;
+      const remoteIsEmpty = !remote || !remote.byYear || !Object.keys(remote.byYear).length;
+      if (remoteIsEmpty) {
+        if (authUser.role === "admin") {
+          Object.keys(nkoState.byYear || {}).forEach(year => {
+            performuPushNkoYear(Number(year), nkoState.byYear[year]);
+          });
+        }
+        return;
+      }
+      const years = Array.from(new Set([...(nkoState.years || []), ...(remote.years || [])])).sort((a, b) => a - b);
+      const byYear = { ...nkoState.byYear, ...remote.byYear };
+      setNkoState({ years, byYear });
     });
     performuApiFetch("/settings/ui-config").then(remote => {
       if (!cancelled && remote) setUiConfig(prev => mergeUiConfig({ ...prev, ...remote }));
@@ -9106,21 +9015,29 @@ function PerformUApp() {
   // (fisikProgramAO, kimiaKpiTargets, dll) yang tidak seragam, jadi disinkron
   // sebagai satu snapshot penuh (bukan dipecah per kategori) untuk
   // menghindari risiko merusak logic kalkulasi yang sudah tervalidasi.
+  //
+  // Sama seperti NKO structure di atas: kalau server belum punya
+  // "_full_store" sama sekali, admin langsung push snapshot lokal saat itu
+  // juga alih-alih menunggu edit pertama.
   const performuStoreLoadedRef = useRef(false);
   useEffect(() => {
     if (!authUser) return;
     let cancelled = false;
     performuApiFetch("/data-kinerja?categoryId=_full_store&year=0").then(rows => {
-      if (cancelled || !rows || !rows.length) { performuStoreLoadedRef.current = true; return; }
+      if (cancelled) return;
+      if (!rows || !rows.length) {
+        performuStoreLoadedRef.current = true;
+        if (authUser.role === "admin") {
+          performuPushDataKinerja("_full_store", 0, null, store);
+        }
+        return;
+      }
       const remoteStore = rows[0].payload;
       if (remoteStore && typeof remoteStore === "object") setStore(remoteStore);
       performuStoreLoadedRef.current = true;
     }).catch(() => { performuStoreLoadedRef.current = true; });
     return () => { cancelled = true; };
   }, [authUser]);
-  useEffect(() => {
-    saveDataStore(store);
-  }, [store]);
   useEffect(() => {
     if (!authUser || !performuStoreLoadedRef.current) return;
     performuPushDataKinerja("_full_store", 0, null, store);
