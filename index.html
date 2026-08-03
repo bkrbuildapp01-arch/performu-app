@@ -2409,6 +2409,13 @@ function MetricChart({
         const k = detailData.findIndex(it => it.series[i] && it.series[i].Realisasi !== null && it.series[i].Realisasi !== undefined);
         return k >= 0 ? k : selItem;
       };
+      // Skala sumbu-Y + garis grid pada mode Detail, mengikuti tampilan grafik non-Detail
+      // agar pembacaan nilai tetap konsisten saat mode Perbesar.
+      const dAxisTickCount = isZoom ? Math.max(3, Math.min(6, Math.round(innerH / 60))) : 0;
+      const dAxisTicks = isZoom ? Array.from({
+        length: dAxisTickCount + 1
+      }, (_, k) => yMin + (yMax - yMin) * (k / dAxisTickCount)) : [];
+      const dFsAxis = isZoom ? 10 : 9;
       return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("defs", null, /*#__PURE__*/React.createElement("linearGradient", {
         id: gradId,
         x1: "0",
@@ -2423,7 +2430,37 @@ function MetricChart({
         offset: "100%",
         stopColor: "#94a3b8",
         stopOpacity: "0.35"
-      }))), selIdx !== null && !showAllData && /*#__PURE__*/React.createElement("rect", {
+      }))), isZoom && dAxisTicks.map((tv, ti) => /*#__PURE__*/React.createElement("g", {
+        key: "dgy-" + ti,
+        pointerEvents: "none"
+      }, /*#__PURE__*/React.createElement("line", {
+        x1: padL,
+        y1: yScale(tv),
+        x2: padL + innerW,
+        y2: yScale(tv),
+        stroke: "#94a3b8",
+        strokeWidth: "1",
+        strokeDasharray: "3 3",
+        opacity: "0.3"
+      }), /*#__PURE__*/React.createElement("text", {
+        x: padL,
+        y: yScale(tv) - 4,
+        textAnchor: "start",
+        fontSize: dFsAxis,
+        fill: "#94a3b8",
+        fontWeight: "600"
+      }, fmtNum(roundByDecimals(tv, decimalsResolved), decimalsResolved)))), isZoom && chartData.map((d, i) => /*#__PURE__*/React.createElement("line", {
+        key: "dgx-" + i,
+        x1: xCenter(i),
+        y1: padT,
+        x2: xCenter(i),
+        y2: padT + innerH,
+        stroke: "#94a3b8",
+        strokeWidth: "1",
+        strokeDasharray: "3 3",
+        opacity: "0.2",
+        pointerEvents: "none"
+      })), selIdx !== null && !showAllData && /*#__PURE__*/React.createElement("rect", {
         x: xCenter(selIdx) - colW / 2,
         y: padT - 4,
         width: colW,
@@ -3265,7 +3302,7 @@ function MetricChart({
     className: "text-right font-semibold text-[10px] uppercase tracking-wide text-slate-400 pb-2.5 sticky top-0 bg-white"
   }, "Prognosa"), /*#__PURE__*/React.createElement("th", {
     className: "text-right font-semibold text-[10px] uppercase tracking-wide text-slate-400 pb-2.5 sticky top-0 bg-white"
-  }, "%"))), /*#__PURE__*/React.createElement("tbody", null, chartData.map((d, i) => {
+  }, "% Capaian"))), /*#__PURE__*/React.createElement("tbody", null, chartData.map((d, i) => {
     const hasReal = d.Realisasi !== null && d.Realisasi !== undefined;
     const hasTarget = d.Prognosa !== null && d.Prognosa !== undefined;
     const hasForecast = d.Forecast !== null && d.Forecast !== undefined;
@@ -5534,6 +5571,51 @@ function ItemGroupedAkumulasiTable({
   const akumRows = accumulateItemRows(cat, rows);
   const periods = visiblePeriods && visiblePeriods.length ? visiblePeriods : cat.periods;
   const cellCls = "border-b border-slate-100 px-3 py-2 text-right tabular-nums text-slate-600";
+  // Baris Total: hanya untuk kategori biaya (Pemeliharaan, Administrasi, Investasi),
+  // menjumlahkan Target/Realisasi/Prognosa akumulasi setiap periode dari seluruh baris item.
+  const TOTAL_ROW_CATS_AKUM = ["pemeliharaan", "administrasi", "investasi"];
+  const showTotalRow = TOTAL_ROW_CATS_AKUM.includes(cat.id);
+  const totalCellCls = "border-b border-emerald-100 px-3 py-2 text-right tabular-nums font-semibold text-emerald-700 bg-emerald-50/60";
+  const totalRow = showTotalRow ? /*#__PURE__*/React.createElement("tr", {
+    className: "bg-emerald-50/60"
+  }, /*#__PURE__*/React.createElement("td", {
+    className: "border-b border-emerald-100 px-3 py-2 bg-emerald-50/60"
+  }), /*#__PURE__*/React.createElement("td", {
+    className: "border-b border-emerald-100 px-3 py-2 font-semibold text-emerald-700 bg-emerald-50/60"
+  }, "Total"), periods.map(p => {
+    let targetSum = 0,
+      targetHas = false;
+    let realisasiSum = 0,
+      realisasiHas = false;
+    let prognosaSum = 0,
+      prognosaHas = false;
+    akumRows.forEach(r => {
+      const tv = r[p + "Prognosa"];
+      const rv = r[p + "Realisasi"];
+      const fv = r[p + "Forecast"];
+      if (tv !== null && tv !== undefined) {
+        targetSum += tv;
+        targetHas = true;
+      }
+      if (rv !== null && rv !== undefined) {
+        realisasiSum += rv;
+        realisasiHas = true;
+      }
+      if (fv !== null && fv !== undefined) {
+        prognosaSum += fv;
+        prognosaHas = true;
+      }
+    });
+    return /*#__PURE__*/React.createElement(React.Fragment, {
+      key: p
+    }, /*#__PURE__*/React.createElement("td", {
+      className: totalCellCls + " border-l"
+    }, targetHas ? fmtNum(roundByDecimals(targetSum, cat.decimals), cat.decimals) : "-"), /*#__PURE__*/React.createElement("td", {
+      className: totalCellCls
+    }, realisasiHas ? fmtNum(roundByDecimals(realisasiSum, cat.decimals), cat.decimals) : "-"), /*#__PURE__*/React.createElement("td", {
+      className: totalCellCls
+    }, prognosaHas ? fmtNum(roundByDecimals(prognosaSum, cat.decimals), cat.decimals) : "-"));
+  })) : null;
   return /*#__PURE__*/React.createElement("div", {
     className: "overflow-x-auto border border-slate-100 rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,0.04)]"
   }, /*#__PURE__*/React.createElement("table", {
@@ -5575,7 +5657,7 @@ function ItemGroupedAkumulasiTable({
     className: cellCls + " font-semibold text-slate-800"
   }, fmtNum(r[p + "Realisasi"], cat.decimals)), /*#__PURE__*/React.createElement("td", {
     className: cellCls
-  }, fmtNum(r[p + "Forecast"], cat.decimals)))))))), /*#__PURE__*/React.createElement("p", {
+  }, fmtNum(r[p + "Forecast"], cat.decimals)))))), totalRow)), /*#__PURE__*/React.createElement("p", {
     className: "text-[11px] text-slate-400 px-4 py-2.5 bg-slate-50/60 border-t border-slate-100"
   }, "Tabel akumulasi dihitung otomatis dari data Bulanan dan tidak dapat diedit."));
 }
