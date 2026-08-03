@@ -9018,9 +9018,22 @@ function PerformUApp() {
   // benar-benar tersimpan ke server sampai admin mengubah sesuatu — user
   // lain login dan melihat server kosong padahal admin "sudah" punya data
   // (di localStorage-nya sendiri).
+  // Gate render pertama sampai data dari server selesai diambil. Tanpa ini,
+  // React sempat merender state awal lokal — struktur NKO default dan Data
+  // Kinerja contoh yang dibangkitkan seedRandom() — lalu menimpanya begitu
+  // fetch selesai, sehingga pengguna melihat "data lama" berkedip sekejap
+  // sebelum berganti ke data sebenarnya.
+  const [bootReady, setBootReady] = useState(false);
+  const bootStepsRef = useRef({ nko: false, store: false });
+  const markBootStep = key => {
+    bootStepsRef.current[key] = true;
+    if (bootStepsRef.current.nko && bootStepsRef.current.store) setBootReady(true);
+  };
   useEffect(() => {
     if (!authUser) return;
     let cancelled = false;
+    bootStepsRef.current = { nko: false, store: false };
+    setBootReady(false);
     performuPullNkoStructure().then(remote => {
       if (cancelled) return;
       const remoteIsEmpty = !remote || !remote.byYear || !Object.keys(remote.byYear).length;
@@ -9035,7 +9048,7 @@ function PerformUApp() {
       const years = Array.from(new Set([...(nkoState.years || []), ...(remote.years || [])])).sort((a, b) => a - b);
       const byYear = { ...nkoState.byYear, ...remote.byYear };
       setNkoState({ years, byYear });
-    });
+    }).catch(() => {}).then(() => { if (!cancelled) markBootStep("nko"); });
     performuApiFetch("/settings/ui-config").then(remote => {
       if (!cancelled && remote) setUiConfig(prev => mergeUiConfig({ ...prev, ...remote }));
     }).catch(() => {});
@@ -9065,13 +9078,22 @@ function PerformUApp() {
       const remoteStore = rows[0].payload;
       if (remoteStore && typeof remoteStore === "object") setStore(remoteStore);
       performuStoreLoadedRef.current = true;
-    }).catch(() => { performuStoreLoadedRef.current = true; });
+    }).catch(() => { performuStoreLoadedRef.current = true; })
+      .then(() => { if (!cancelled) markBootStep("store"); });
     return () => { cancelled = true; };
   }, [authUser]);
   useEffect(() => {
     if (!authUser || !performuStoreLoadedRef.current) return;
     performuPushDataKinerja("_full_store", 0, null, store);
   }, [store, authUser]);
+  // Jaring pengaman: kalau server lambat/tidak bisa dihubungi, jangan biarkan
+  // pengguna terjebak di layar muat — setelah 10 detik tampilkan aplikasi apa
+  // adanya (data lokal), persis seperti perilaku offline-safe sebelumnya.
+  useEffect(() => {
+    if (!authUser) return;
+    const t = setTimeout(() => setBootReady(true), 10000);
+    return () => clearTimeout(t);
+  }, [authUser]);
   const [tabTableManagerOpen, setTabTableManagerOpen] = useState(false);
   const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
   const updateUiConfig = next => {
@@ -9472,6 +9494,22 @@ function PerformUApp() {
   };
   if (!authUser) {
     return /*#__PURE__*/React.createElement(LoginPage, { onLogin: handleLogin });
+  }
+  // Tampilkan layar muat sampai data server siap, supaya angka contoh bawaan
+  // (seedRandom) tidak sempat terlihat sekejap sebelum ditimpa data asli.
+  if (!bootReady) {
+    return /*#__PURE__*/React.createElement("div", {
+      className: "w-full min-h-[600px] bg-[#F1F2F6] flex flex-col items-center justify-center gap-3",
+      style: { fontFamily: "'Inter', ui-sans-serif, system-ui, sans-serif" }
+    },
+      /*#__PURE__*/React.createElement("div", { className: "flex items-center gap-2.5 text-slate-700" },
+        /*#__PURE__*/React.createElement("span", {
+          className: "inline-block w-5 h-5 rounded-full border-2 border-slate-300 border-t-emerald-600 animate-spin"
+        }),
+        /*#__PURE__*/React.createElement("span", { className: "text-sm font-semibold" }, "Memuat data terbaru…")
+      ),
+      /*#__PURE__*/React.createElement("p", { className: "text-xs text-slate-400" }, "Mengambil data dari server, mohon tunggu sebentar.")
+    );
   }
   const role = authUser.role;
   const isAdmin = role === "admin";
