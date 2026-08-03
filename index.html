@@ -1558,9 +1558,11 @@ function computeMonthlySimpleTrend(rows, cat) {
   const pct = prevVal ? delta / prevVal * 100 : 0;
   const { semStart, semEnd } = semesterBoundsFor(last.i, rows.length);
   // Fisik Pemeliharaan / PRK Investasi Terkontrak punya kolom akumulasi sendiri di Data Input.
+  // "last" = KPI rasio/skor (mis. Biaya Kimia dan Pelumas) -> pakai nilai bulan terakhir semester.
+  const akhirLast = cat.akhirPeriodeMode === "last";
   const hasAkum = rows.some(r => r && (r.akumTarget !== undefined || r.akumForecast !== undefined));
-  const targetAkhir = hasAkum ? lastValueInRange(rows, semStart, semEnd, r => r && r.akumTarget) : rows.slice(semStart, semEnd).reduce((s, r) => s + (r.target || 0), 0);
-  const prognosaAkhir = hasAkum ? lastValueInRange(rows, semStart, semEnd, r => r && r.akumForecast) : rows.slice(semStart, semEnd).reduce((s, r) => s + (r.forecast || 0), 0);
+  const targetAkhir = akhirLast ? lastValueInRange(rows, semStart, semEnd, r => r && r.target) : hasAkum ? lastValueInRange(rows, semStart, semEnd, r => r && r.akumTarget) : rows.slice(semStart, semEnd).reduce((s, r) => s + (r.target || 0), 0);
+  const prognosaAkhir = akhirLast ? lastValueInRange(rows, semStart, semEnd, r => r && r.forecast) : hasAkum ? lastValueInRange(rows, semStart, semEnd, r => r && r.akumForecast) : rows.slice(semStart, semEnd).reduce((s, r) => s + (r.forecast || 0), 0);
   const targetLatest = last.r.target;
   return {
     latest,
@@ -1774,9 +1776,10 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
     const delta = prevVal !== null && prevVal !== undefined ? latest - prevVal : 0;
     const pct = prevVal ? delta / prevVal * 100 : 0;
     const { semStart, semEnd } = semesterBoundsFor(monthIdx, rows.length);
+    const akhirLast = cat.akhirPeriodeMode === "last";
     const hasAkum = rows.some(r => r && (r.akumTarget !== undefined || r.akumForecast !== undefined));
-    const targetAkhir = hasAkum ? lastValueInRange(rows, semStart, semEnd, r => r && r.akumTarget) : rows.slice(semStart, semEnd).reduce((s, r) => s + (r.target || 0), 0);
-    const prognosaAkhir = hasAkum ? lastValueInRange(rows, semStart, semEnd, r => r && r.akumForecast) : rows.slice(semStart, semEnd).reduce((s, r) => s + (r.forecast || 0), 0);
+    const targetAkhir = akhirLast ? lastValueInRange(rows, semStart, semEnd, r => r && r.target) : hasAkum ? lastValueInRange(rows, semStart, semEnd, r => r && r.akumTarget) : rows.slice(semStart, semEnd).reduce((s, r) => s + (r.target || 0), 0);
+    const prognosaAkhir = akhirLast ? lastValueInRange(rows, semStart, semEnd, r => r && r.forecast) : hasAkum ? lastValueInRange(rows, semStart, semEnd, r => r && r.akumForecast) : rows.slice(semStart, semEnd).reduce((s, r) => s + (r.forecast || 0), 0);
     const targetLatest = row.target;
     const mode = getCapaianMode(capaianModes, cat.id);
     const pair = resolveCapaianPair(mode, capaianManualValues, cat.id, row.bulan, realisasi, row.forecast, targetLatest);
@@ -2059,6 +2062,18 @@ function StatCard({
   onAnalisa
 }) {
   const trend = useMemo(() => computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaianManualValues, pemMode), [cat, rows, groupKey, monthIdx, capaianModes, capaianManualValues, pemMode]);
+  // Badge di sebelah angka Prognosa Akhir Periode menampilkan %CAPAIAN prognosa terhadap
+  // target akhir periode (memperhitungkan polarisasi Normal/Inverse), bukan deviasi/kenaikan.
+  const capaianAkhirPct = useMemo(() => {
+    if (!trend) return null;
+    const modeKey = cat.type === "monthlyGrouped" ? groupKey || (cat.groups && cat.groups[0] ? cat.groups[0].key : cat.id) : cat.id;
+    return computeCapaianPct(getCapaianMode(capaianModes, modeKey), trend.prognosaAkhir, trend.targetAkhir);
+  }, [trend, cat, groupKey, capaianModes]);
+  const capaianAkhirOk = capaianAkhirPct !== null && capaianAkhirPct !== undefined && capaianAkhirPct >= 100;
+  const capaianAkhirBadge = extraCls => capaianAkhirPct === null || capaianAkhirPct === undefined ? null : /*#__PURE__*/React.createElement("span", {
+    title: "% capaian prognosa akhir periode terhadap target akhir periode",
+    className: `inline-flex items-center ${extraCls} font-semibold px-1.5 py-0.5 rounded-full ${capaianAkhirOk ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"}`
+  }, fmtNum(capaianAkhirPct, 1), "%");
   const numberColorClass = trend && trend.isProgFallback ? "text-slate-400" : "text-slate-900";
   const unit = cat.unit || "";
   const badgeClass = COLOR_BADGE[colorOverride || cat.color] || "bg-slate-100 text-slate-600";
@@ -2132,9 +2147,7 @@ function StatCard({
   }, /*#__PURE__*/React.createElement(AnimatedNumber, {
     value: round1(trend.prognosaAkhir),
     decimals: cat.decimals
-  }), trend.targetAkhir !== undefined && trend.targetAkhir !== null && /*#__PURE__*/React.createElement("span", {
-    className: `inline-flex items-center text-[9px] font-semibold px-1.5 py-0.5 rounded-full ${trend.prognosaAkhir >= trend.targetAkhir ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"}`
-  }, trend.prognosaAkhir >= trend.targetAkhir ? "+" : "-", trend.targetAkhir ? Math.abs(round1((trend.prognosaAkhir - trend.targetAkhir) / trend.targetAkhir * 100)) : 0, "%")))) : compact || hero ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }), capaianAkhirBadge("text-[9px]")))) : compact || hero ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "flex items-baseline gap-1 min-w-0"
   }, /*#__PURE__*/React.createElement("span", {
     className: `${numberSize} font-bold ${numberColorClass} tabular-nums tracking-tight inline-flex items-baseline gap-1.5 min-w-0`
@@ -2156,9 +2169,7 @@ function StatCard({
   }, /*#__PURE__*/React.createElement(AnimatedNumber, {
     value: round1(trend.prognosaAkhir),
     decimals: cat.decimals
-  }), " ", unit), trend.targetAkhir !== undefined && /*#__PURE__*/React.createElement("span", {
-    className: `inline-flex items-center text-[9px] font-semibold px-1.5 py-0.5 rounded-full ${trend.prognosaAkhir >= trend.targetAkhir ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"}`
-  }, trend.prognosaAkhir >= trend.targetAkhir ? "+" : "-", trend.targetAkhir ? Math.abs(round1((trend.prognosaAkhir - trend.targetAkhir) / trend.targetAkhir * 100)) : 0, "%")))) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }), " ", unit), capaianAkhirBadge("text-[9px]")))) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "flex items-baseline gap-1.5"
   }, /*#__PURE__*/React.createElement("span", {
     className: `${numberSize} font-bold ${numberColorClass} tabular-nums tracking-tight inline-flex items-baseline gap-1.5`
@@ -2180,9 +2191,7 @@ function StatCard({
   }, /*#__PURE__*/React.createElement(AnimatedNumber, {
     value: round1(trend.prognosaAkhir),
     decimals: cat.decimals
-  }), " ", unit), trend.targetAkhir !== undefined && /*#__PURE__*/React.createElement("span", {
-    className: `inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${trend.prognosaAkhir >= trend.targetAkhir ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"}`
-  }, trend.prognosaAkhir >= trend.targetAkhir ? "+" : "-", trend.targetAkhir ? Math.abs(round1((trend.prognosaAkhir - trend.targetAkhir) / trend.targetAkhir * 100)) : 0, "%")))) : /*#__PURE__*/React.createElement("p", {
+  }), " ", unit), capaianAkhirBadge("text-[10px]")))) : /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-400 py-3"
   }, "Belum ada data realisasi."));
 }
@@ -2278,7 +2287,8 @@ function MetricChart({
   onActiveChange,
   headerControls,
   detailData,
-  dataTitleSuffix
+  dataTitleSuffix,
+  capaianPctList
 }) {
   const realColor = lineColor || "#008C4F";
   const chartData = series;
@@ -3431,7 +3441,19 @@ function MetricChart({
     let badgeUp = true,
       badgePct = null,
       badgeFallback = false;
-    if (hasReal && hasTarget) {
+    // Kolom "% Capaian" mengikuti PERSIS tabel Capaian pada Data Input (memperhitungkan
+    // polarisasi Normal/Inverse dan nilai manual mode Langsung) apabila daftar capaian
+    // disediakan. Jika tidak, kembali ke perhitungan deviasi terhadap target.
+    const capEntry = capaianPctList && capaianPctList[i] ? capaianPctList[i] : null;
+    if (capEntry) {
+      const useProg = capEntry.realisasi === null || capEntry.realisasi === undefined;
+      const val = useProg ? capEntry.prognosa : capEntry.realisasi;
+      if (val !== null && val !== undefined) {
+        badgePct = round1(val);
+        badgeUp = badgePct >= 100;
+        badgeFallback = useProg;
+      }
+    } else if (hasReal && hasTarget) {
       // Capaian realisasi terhadap target
       badgeUp = d.Realisasi >= d.Prognosa;
       badgePct = d.Prognosa ? round1((d.Realisasi - d.Prognosa) / d.Prognosa * 100) : 0;
@@ -3458,7 +3480,7 @@ function MetricChart({
       className: "py-2 text-right"
     }, badgePct !== null ? /*#__PURE__*/React.createElement("span", {
       className: `inline-flex items-center gap-0.5 text-[9px] font-semibold px-1.5 py-0.5 rounded-full ${badgeFallback ? "opacity-50" : ""} ${badgeUp ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"}`
-    }, badgeUp ? "+" : "-", Math.abs(badgePct), "%") : /*#__PURE__*/React.createElement("span", {
+    }, capEntry ? `${fmtNum(badgePct, 1)}%` : `${badgeUp ? "+" : "-"}${Math.abs(badgePct)}%`) : /*#__PURE__*/React.createElement("span", {
       className: "text-slate-300"
     }, "-")));
   }))))), /*#__PURE__*/React.createElement("div", {
@@ -5350,7 +5372,35 @@ function BerandaPage({
     shortLabel: activeLainnyaRow.label,
     description: `Melacak capaian ${activeLainnyaRow.label} dari waktu ke waktu dan membandingkannya dengan prognosa setiap bulan.`
   } : applyRename(getMetric(mainMetricId) || ALL_METRICS.nko);
-  const rowsFor = (catId, y) => catId === "nko" ? nkoComputeMonthlyRows(nkoState, store, y) : store[catId].byYear[y];
+  // KPI Biaya Kimia dan Pelumas di Beranda mengikuti baris KPI pada Data Input tab
+  // "Biaya Kimia dan Pelumas" > sub-tab Akumulasi (rasio Pelumas/Produksi terhadap target
+  // KPI yang diisi manual), bukan penjumlahan item Pelumas + Produksi.
+  const kimiaBaseCat = CATEGORIES.find(c => c.id === "kimia");
+  const kimiaKpiCat = useMemo(() => kimiaBaseCat ? {
+    ...kimiaBaseCat,
+    type: "monthlySimple",
+    akhirPeriodeMode: "last",
+    decimals: 4,
+    cols: [{ key: "target", label: "Target" }, { key: "realisasi", label: "Realisasi" }, { key: "forecast", label: "Prognosa" }]
+  } : null, [kimiaBaseCat]);
+  const kimiaKpiRows = useMemo(() => {
+    if (!kimiaBaseCat || !store.kimia) return [];
+    const y = selectedYears.kimia;
+    const src = store.kimia.byYear[y] || [];
+    const targets = store.kimiaKpiTargets && store.kimiaKpiTargets[y] ? store.kimiaKpiTargets[y] : {};
+    return computeKimiaKpiRow(kimiaBaseCat, y, src, targets).map((m, i) => ({
+      id: `${y}-kimiakpi-${i}`,
+      bulan: m.bulan,
+      target: m.target,
+      realisasi: m.realisasi,
+      forecast: m.prognosa
+    }));
+  }, [store.kimia, store.kimiaKpiTargets, selectedYears.kimia, kimiaBaseCat]);
+  const metricCatFor = m => m && m.id === "kimia" && kimiaKpiCat ? kimiaKpiCat : m ? m.cat : null;
+  // Kimia dikecualikan dari toggle Bulanan/Akumulasi karena baris KPI-nya sudah berbasis akumulasi.
+  const isAkumChartCat = id => AKUMULASI_CATS.includes(id) && id !== "kimia";
+  const rowsFor = (catId, y) => catId === "nko" ? nkoComputeMonthlyRows(nkoState, store, y) : catId === "kimia" ? kimiaKpiRows : store[catId].byYear[y];
+  const mainCat = activeLainnyaRow ? mainMetric.cat : metricCatFor(mainMetric) || mainMetric.cat;
   const mainRows = activeLainnyaRow ? [activeLainnyaRow] : rowsFor(mainMetric.catId, selectedYears[mainMetric.catId]);
   // Mode bulanan/akumulasi adalah SATU state global yang berlaku untuk seluruh kategori biaya
   // sekaligus (Pemeliharaan, Administrasi, Kimia, Investasi, Lainnya). Mengubah mode di satu
@@ -5368,7 +5418,7 @@ function BerandaPage({
   const FORCE_AKUMULASI_MAIN_IDS = ["nko", "eaf", "efor", "psst"];
   const forceAkumulasiForOthers = FORCE_AKUMULASI_MAIN_IDS.includes(mainMetricId);
   const getPemModeFor = catId => forceAkumulasiForOthers ? "akumulasi" : pemMode;
-  const mainSeriesBase = useMemo(() => activeLainnyaRow ? buildItemRowSeries(mainMetric.cat, activeLainnyaRow) : buildChartSeries(mainMetric.cat, mainRows, mainMetric.groupKey), [mainMetricId, mainRows, activeLainnyaRow]);
+  const mainSeriesBase = useMemo(() => activeLainnyaRow ? buildItemRowSeries(mainMetric.cat, activeLainnyaRow) : buildChartSeries(mainCat, mainRows, mainMetric.groupKey), [mainMetricId, mainRows, activeLainnyaRow, mainCat]);
   // Fisik Pemeliharaan & PRK Investasi Terkontrak sudah punya kolom akumulasi sendiri di
   // Data Input (akumTarget/akumRealisasi/akumForecast), jadi mode Akumulasi Bulanan cukup
   // membaca kolom tersebut — tidak perlu diakumulasikan ulang.
@@ -5382,10 +5432,10 @@ function BerandaPage({
         Forecast: r.akumForecast === undefined ? null : r.akumForecast
       }));
     }
-    return AKUMULASI_CATS.includes(mainMetric.id) && pemMode === "akumulasi" ? accumulateChartSeries(mainSeriesBase, mainMetric.cat.decimals) : mainSeriesBase;
+    return isAkumChartCat(mainMetric.id) && pemMode === "akumulasi" ? accumulateChartSeries(mainSeriesBase, mainCat.decimals) : mainSeriesBase;
   }, [mainSeriesBase, mainRows, pemMode, mainMetricId]);
   const pemDetailData = useMemo(() => {
-    if (!AKUMULASI_CATS.includes(mainMetric.id)) return null;
+    if (!isAkumChartCat(mainMetric.id)) return null;
     const cat = mainMetric.cat;
     return mainRows.map((r, idx) => {
       let cp = null,
@@ -5416,13 +5466,45 @@ function BerandaPage({
       };
     });
   }, [mainMetricId, mainRows, pemMode]);
-  const pemModeToggle = AKUMULASI_CATS.includes(mainMetric.id) || PROGRAM_AKUM_CATS.includes(mainMetric.id) ? /*#__PURE__*/React.createElement("div", {
+  const pemModeToggle = isAkumChartCat(mainMetric.id) || PROGRAM_AKUM_CATS.includes(mainMetric.id) ? /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-1.5 flex-wrap"
   }, [["bulanan", "Bulanan"], ["akumulasi", "Akumulasi Bulanan"]].map(([k, lbl]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => setPemMode(k),
     className: `text-xs font-semibold px-3 py-2 rounded-full transition ${pemMode === k ? "bg-[#0F2A3F] text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`
   }, lbl))) : null;
+  // Daftar %Capaian per bulan untuk tabel pada mode Perbesar — diambil dari fungsi yang sama
+  // dengan tabel Capaian di Data Input agar angkanya identik.
+  const mainCapaianPctList = useMemo(() => {
+    const modes = store.capaianModes;
+    const manual = store.capaianManualValues;
+    const toList = arr => arr.map(r => ({
+      realisasi: r.capaianRealisasi,
+      prognosa: r.capaianPrognosa
+    }));
+    try {
+      if (activeLainnyaRow) return null;
+      const id = mainMetric.id;
+      if (id === "kimia") {
+        const y = selectedYears.kimia;
+        const targets = store.kimiaKpiTargets && store.kimiaKpiTargets[y] ? store.kimiaKpiTargets[y] : {};
+        return toList(computeKimiaCapaianRows(kimiaBaseCat, y, store.kimia.byYear[y] || [], targets, modes, manual));
+      }
+      if (PROGRAM_AKUM_CATS.includes(id)) return toList(computeProgramAOCapaianRows(mainRows, id, modes, manual));
+      if (CAPAIAN_ITEM_CATS.includes(id)) return toList(computeItemGroupedCapaianRows(mainCat, selectedYears[mainMetric.catId], mainRows, modes, manual));
+      if (mainCat.type === "monthlyGrouped") {
+        const gKey = mainMetric.groupKey || (mainCat.groups[0] && mainCat.groups[0].key);
+        const rowsCap = computeCapaianRows(mainCat, mainRows, modes, manual);
+        return rowsCap.map(r => ({
+          realisasi: r[gKey + "CapaianRealisasi"],
+          prognosa: r[gKey + "CapaianPrognosa"]
+        }));
+      }
+    } catch (e) {
+      return null;
+    }
+    return null;
+  }, [mainMetricId, mainRows, mainCat, activeLainnyaRow, store.capaianModes, store.capaianManualValues, store.kimiaKpiTargets, selectedYears]);
   const [bisnisOpenIdx, setBisnisOpenIdx] = useState(0);
   const isTopChipMain = QUICK_SIDE_IDS.includes(mainMetricId);
   const sideIds = isTopChipMain ? enabledQuickIds.filter(id => id !== mainMetricId).sort((a, b) => a === "nko" ? -1 : b === "nko" ? 1 : 0).slice(0, 3) : enabledQuickIds;
@@ -5435,7 +5517,7 @@ function BerandaPage({
     series: mainSeries,
     headerControls: pemModeToggle,
     detailData: pemDetailData,
-    dataTitleSuffix: AKUMULASI_CATS.includes(mainMetric.id) || PROGRAM_AKUM_CATS.includes(mainMetric.id) ? pemMode === "akumulasi" ? "Akumulasi" : "Bulanan" : null,
+    dataTitleSuffix: isAkumChartCat(mainMetric.id) || PROGRAM_AKUM_CATS.includes(mainMetric.id) ? pemMode === "akumulasi" ? "Akumulasi" : "Bulanan" : null,
     year: selectedYears[mainMetric.catId],
     title: mainMetric.title,
     shortLabel: mainMetric.shortLabel,
@@ -5443,7 +5525,8 @@ function BerandaPage({
     icon: mainMetric.icon,
     iconColorClass: mainMetric.iconColorClass,
     lineColor: mainMetric.lineColor,
-    decimals: mainMetric.cat.decimals,
+    decimals: mainCat.decimals,
+    capaianPctList: mainCapaianPctList,
     years: store[mainMetric.catId].years,
     selectedYear: selectedYears[mainMetric.catId],
     onSelectYear: y => setYear(mainMetric.catId, y),
@@ -5455,7 +5538,7 @@ function BerandaPage({
     const m = applyRename(getMetric(id));
     return /*#__PURE__*/React.createElement(StatCard, {
       key: id,
-      cat: m.cat,
+      cat: metricCatFor(m),
       rows: rowsFor(m.catId, selectedYears[m.catId]),
       groupKey: m.groupKey,
       titleOverride: m.title,
@@ -5492,8 +5575,8 @@ function BerandaPage({
     const m = ALL_METRICS[id];
     return /*#__PURE__*/React.createElement(StatCard, {
       key: id,
-      cat: m.cat,
-      rows: store[m.catId].byYear[selectedYears[m.catId]],
+      cat: metricCatFor(m),
+      rows: rowsFor(m.catId, selectedYears[m.catId]),
       groupKey: m.groupKey,
       titleOverride: m.title,
       iconOverride: m.icon,
@@ -5524,8 +5607,8 @@ function BerandaPage({
     if (!m) return null;
     return /*#__PURE__*/React.createElement(StatCard, {
       key: id,
-      cat: m.cat,
-      rows: store[m.catId].byYear[selectedYears[m.catId]],
+      cat: metricCatFor(m),
+      rows: rowsFor(m.catId, selectedYears[m.catId]),
       groupKey: m.groupKey,
       titleOverride: m.title,
       iconOverride: m.icon,
