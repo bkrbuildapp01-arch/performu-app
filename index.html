@@ -771,6 +771,44 @@ function saveAuthSession(session) {
 function clearAuthSession() {
   performuClearAuthSession();
 }
+// ---------------------------------------------------------------------------
+// Struktur NKO per BULAN.
+//
+// Penyimpanan tetap satu objek per tahun (kompatibel dengan localStorage dan API
+// per-tahun yang sudah ada). Struktur tahunan berfungsi sebagai basis untuk seluruh
+// bulan, dan setiap bulan dapat memiliki penyesuaian sendiri di `byMonth[idx]`.
+//   - Pengaturan saat SEBUAH BULAN dipilih -> hanya mengubah bulan tersebut.
+//   - Pengaturan saat TIDAK ada bulan dipilih (atau Impor) -> berlaku untuk seluruh
+//     bulan pada tahun tsb (penyesuaian per bulan direset).
+// ---------------------------------------------------------------------------
+function nkoStripMonthOverrides(structure) {
+  if (!structure) return structure;
+  const next = { ...structure };
+  delete next.byMonth;
+  return next;
+}
+function nkoStructureForMonth(yearStructure, monthIdx) {
+  if (!yearStructure) return yearStructure;
+  if (monthIdx === null || monthIdx === undefined) return nkoStripMonthOverrides(yearStructure);
+  const override = yearStructure.byMonth && yearStructure.byMonth[monthIdx];
+  return override ? nkoStripMonthOverrides(override) : nkoStripMonthOverrides(yearStructure);
+}
+// Menulis hasil edit ke tempat yang benar sesuai bulan yang sedang dipilih.
+function nkoApplyStructureEdit(yearStructure, monthIdx, nextStructure) {
+  const clean = nkoStripMonthOverrides(nextStructure);
+  const base = yearStructure || {};
+  if (monthIdx === null || monthIdx === undefined) {
+    // Berlaku seluruh bulan: reset penyesuaian per bulan.
+    return { ...clean, byMonth: {} };
+  }
+  return {
+    ...base,
+    byMonth: {
+      ...(base.byMonth || {}),
+      [monthIdx]: clean
+    }
+  };
+}
 function cloneNkoStructureForYear(nkoState, fromYear) {
   const src = nkoState.byYear[fromYear] || buildDefaultNkoStructure();
   return JSON.parse(JSON.stringify(src));
@@ -848,10 +886,32 @@ function nkoLinkedValues(node, store, year, monthIdx) {
   }
   return null;
 }
-function nkoLinkedRowOptions(catId) {
+// Daftar pilihan baris untuk "Ambil dari Analisa" diambil dari baris NYATA pada Data Input
+// (store) tahun terkait, bukan dari daftar contoh (defaultItems). Baris yang ditambah/diubah
+// pengguna di Data Input otomatis ikut muncul di sini.
+function nkoLinkedRowOptions(catId, store, year) {
   const cat = CATEGORIES.find(c => c.id === catId);
   if (!cat || cat.type !== "itemGrouped") return [];
-  return (cat.defaultItems || []).map(label => ({ value: label, label }));
+  const labels = [];
+  const push = label => {
+    const v = (label === null || label === undefined ? "" : String(label)).trim();
+    if (v && labels.indexOf(v) === -1) labels.push(v);
+  };
+  const catStore = store && store[catId];
+  if (catStore && catStore.byYear) {
+    const rowsForYear = catStore.byYear[year];
+    if (Array.isArray(rowsForYear) && rowsForYear.length) {
+      rowsForYear.forEach(r => push(r.label));
+    } else {
+      // Tahun terpilih belum punya baris -> pakai gabungan baris dari tahun lain agar
+      // dropdown tidak kosong.
+      Object.keys(catStore.byYear).forEach(y => {
+        (catStore.byYear[y] || []).forEach(r => push(r.label));
+      });
+    }
+  }
+  if (!labels.length) (cat.defaultItems || []).forEach(push);
+  return labels.map(label => ({ value: label, label }));
 }
 function nkoComputeItemResult(item, weight, store, year, monthIdx, useForecast) {
   const isItemDeduction = item.formulaType === "deduction";
@@ -939,8 +999,10 @@ function nkoHasAnyRealisasiForMonth(structure, store, year, monthIdx) {
 function nkoComputeMonthlyRows(nkoState, store, year) {
   // Bangun 12 baris bulanan untuk tab "NKO" di menu Analisa: Target = total bobot,
   // Realisasi = total Nilai NKO bulan tsb, Prognosa = total Nilai NKO memakai data forecast bila realisasi kosong.
-  const structure = nkoState.byYear[year];
+  const yearStructure = nkoState.byYear[year];
   return MONTHS.map((m, idx) => {
+    // Setiap bulan memakai strukturnya sendiri bila ada penyesuaian per bulan.
+    const structure = nkoStructureForMonth(yearStructure, idx);
     if (!structure) return { id: `${year}-${idx}`, bulan: `${m} ${year}`, nkoPrognosa: null, nkoRealisasi: null, nkoForecast: null };
     const hasRealisasi = nkoHasAnyRealisasiForMonth(structure, store, year, idx);
     const realResult = nkoComputeStructureResult(structure, store, year, idx, false);
@@ -7631,7 +7693,7 @@ function NkoFormulaRow({ node, onUpdate, disableManualRP, compact, hasSubItems, 
         value: node.linkedRowLabel,
         onChange: handleLinkedRowChange,
         className: "w-48 shrink-0",
-        options: [{ value: "", label: "Pilih baris..." }, ...nkoLinkedRowOptions(node.linkedCatId)]
+        options: [{ value: "", label: "Pilih baris..." }, ...nkoLinkedRowOptions(node.linkedCatId, store, year)]
       })
     ),
     !isNA && formulaTypeLocked && E("span", {
@@ -7968,7 +8030,9 @@ function LaporanPage({ nkoState, onChangeNkoState, selectedYears, store, readOnl
   const nkoYears = nkoState.years && nkoState.years.length ? nkoState.years : Object.keys(nkoState.byYear || {}).map(Number);
   const [year, setYearState] = useState(selectedYears && selectedYears.nko && nkoYears.includes(selectedYears.nko) ? selectedYears.nko : nkoYears[nkoYears.length - 1]);
   const [monthIdx, setMonthIdx] = useState(null);
-  const structure = nkoState.byYear[year] || buildDefaultNkoStructure();
+  const yearStructure = nkoState.byYear[year] || buildDefaultNkoStructure();
+  // Struktur yang sedang ditampilkan/diedit: mengikuti bulan yang dipilih (bila ada).
+  const structure = nkoStructureForMonth(yearStructure, monthIdx);
 
   useEffect(() => {
     function handleScroll() {
@@ -7986,7 +8050,9 @@ function LaporanPage({ nkoState, onChangeNkoState, selectedYears, store, readOnl
     setYearState(y);
   }
   function updateStructure(nextStructure) {
-    onChangeNkoState({ ...nkoState, byYear: { ...nkoState.byYear, [year]: nextStructure } });
+    // Bulan dipilih -> hanya bulan tsb yang berubah. Tanpa bulan -> berlaku seluruh bulan.
+    const nextYearStructure = nkoApplyStructureEdit(yearStructure, monthIdx, nextStructure);
+    onChangeNkoState({ ...nkoState, byYear: { ...nkoState.byYear, [year]: nextYearStructure } });
   }
   function addYear() {
     const nextYear = Math.max(...nkoYears) + 1;
@@ -8020,15 +8086,18 @@ function LaporanPage({ nkoState, onChangeNkoState, selectedYears, store, readOnl
         { key: "hasil", label: "Hasil Perhitungan", icon: "bar-chart" }
       ];
 
+  // Impor: SELALU berlaku untuk seluruh bulan pada tahun yang sedang dibuka (penyesuaian
+  // per bulan direset), sesuai perilaku yang diharapkan pada tombol "Impor".
   function replaceStructure(nextStructureFields) {
-    onChangeNkoState({ ...nkoState, byYear: { ...nkoState.byYear, [year]: { ...structure, ...nextStructureFields } } });
+    const merged = { ...nkoStripMonthOverrides(yearStructure), ...nextStructureFields, byMonth: {} };
+    onChangeNkoState({ ...nkoState, byYear: { ...nkoState.byYear, [year]: merged } });
   }
 
   return E("div", { className: "flex flex-col gap-5" },
     E("div", { className: "flex items-center justify-between flex-wrap gap-3" },
       E("div", null,
         E("h1", { className: "text-lg font-bold text-slate-800" }, "Form NKO"),
-        E("p", { className: "text-sm text-slate-400 mt-0.5" }, readOnly ? "Lihat hasil perhitungan NKO bulanan." : "Susun struktur KPI, tentukan bobot dan rumus, lalu lihat hasil perhitungan NKO bulanan. Struktur berlaku sama untuk seluruh bulan pada tahun yang sama.")
+        E("p", { className: "text-sm text-slate-400 mt-0.5" }, readOnly ? "Lihat hasil perhitungan NKO bulanan." : "Susun struktur KPI, tentukan bobot dan rumus, lalu lihat hasil perhitungan NKO bulanan. Pilih bulan untuk mengatur KPI khusus bulan tersebut; tanpa memilih bulan, perubahan berlaku untuk seluruh bulan pada tahun tsb.")
       ),
       E("div", { className: "flex items-center gap-2 flex-wrap" },
         !readOnly && E(NkoStructureExportImportButtons, {
@@ -8046,12 +8115,23 @@ function LaporanPage({ nkoState, onChangeNkoState, selectedYears, store, readOnl
       )
     ),
     E("div", { className: "flex items-center gap-1.5 flex-wrap" },
-      MONTHS.map((m, idx) => E("button", {
-        key: m,
-        onClick: () => setMonthIdx(monthIdx === idx ? null : idx),
-        className: `text-xs font-semibold px-3 py-1.5 rounded-full transition ${monthIdx === idx ? "bg-[#0F2A3F] text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`
-      }, m))
+      MONTHS.map((m, idx) => {
+        const hasOverride = !!(yearStructure && yearStructure.byMonth && yearStructure.byMonth[idx]);
+        return E("button", {
+          key: m,
+          onClick: () => setMonthIdx(monthIdx === idx ? null : idx),
+          title: hasOverride ? `${m}: memiliki pengaturan KPI khusus bulan ini` : undefined,
+          className: `relative text-xs font-semibold px-3 py-1.5 rounded-full transition ${monthIdx === idx ? "bg-[#0F2A3F] text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`
+        }, m, hasOverride && E("span", {
+          className: `absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full ${monthIdx === idx ? "bg-emerald-300" : "bg-emerald-500"}`
+        }));
+      })
     ),
+    !readOnly && tab === "struktur" && E("p", {
+      className: `text-xs rounded-lg px-3 py-2 ${monthIdx === null || monthIdx === undefined ? "bg-slate-50 text-slate-500" : "bg-amber-50 text-amber-700"}`
+    }, monthIdx === null || monthIdx === undefined
+      ? "Tidak ada bulan dipilih — perubahan struktur berlaku untuk SELURUH bulan tahun ini dan mereset pengaturan khusus per bulan."
+      : `Bulan ${MONTHS[monthIdx]} ${year} dipilih — perubahan hanya berlaku untuk bulan ini, bulan lain pada tahun yang sama tidak berubah.`),
     E("div", { className: "flex items-center gap-1 border-b border-slate-200" },
       tabs.map(t => E("button", {
         key: t.key,
