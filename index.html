@@ -4630,6 +4630,42 @@ function bisnisTrendForMonth(row, monthIdx) {
     hasReal: true
   };
 }
+// Kartu Kinerja Bisnis Proses menampilkan %Capaian Realisasi & %Capaian Prognosa — angka yang
+// sama persis dengan kolom pada tab Capaian Data Input (computeLainnyaCapaianItemRows).
+function bisnisQuarterForMonth(monthIdx) {
+  if (monthIdx === null || monthIdx === undefined) return { qIdx: null, prognosaOnly: false };
+  if (monthIdx <= 1) return { qIdx: 0, prognosaOnly: true };
+  if (monthIdx <= 4) return { qIdx: 0, prognosaOnly: false };
+  if (monthIdx <= 7) return { qIdx: 1, prognosaOnly: false };
+  if (monthIdx <= 10) return { qIdx: 2, prognosaOnly: false };
+  return { qIdx: 3, prognosaOnly: false };
+}
+function bisnisCapaianForMonth(capRow, row, monthIdx) {
+  if (!capRow) return null;
+  let qIdx, prognosaOnly = false;
+  if (monthIdx === null || monthIdx === undefined) {
+    // Tanpa bulan terpilih: pakai triwulan terakhir yang punya realisasi.
+    qIdx = -1;
+    for (let k = QUARTERS.length - 1; k >= 0; k--) {
+      const rv = row ? row[QUARTERS[k] + "Realisasi"] : null;
+      if (rv !== null && rv !== undefined) { qIdx = k; break; }
+    }
+    if (qIdx === -1) { qIdx = 0; prognosaOnly = true; }
+  } else {
+    const q = bisnisQuarterForMonth(monthIdx);
+    qIdx = q.qIdx;
+    prognosaOnly = q.prognosaOnly;
+  }
+  const period = QUARTERS[qIdx];
+  const rv = row ? row[period + "Realisasi"] : null;
+  const hasReal = !prognosaOnly && rv !== null && rv !== undefined;
+  return {
+    period: prognosaOnly ? null : period,
+    hasReal,
+    capaianRealisasi: hasReal ? capRow[period + "CapaianRealisasi"] : null,
+    capaianPrognosa: capRow[period + "CapaianPrognosa"]
+  };
+}
 function BisnisProsesCard({
   rows,
   unit,
@@ -4637,8 +4673,11 @@ function BisnisProsesCard({
   setOpenIdx,
   monthIdx,
   onSeeAll,
-  titleOverride
+  titleOverride,
+  capaianRows
 }) {
+  const capById = {};
+  (capaianRows || []).forEach(r => { capById[r.id] = r; });
   return /*#__PURE__*/React.createElement("div", {
     className: "p-5"
   }, /*#__PURE__*/React.createElement("div", {
@@ -4652,6 +4691,7 @@ function BisnisProsesCard({
     className: "divide-y divide-slate-100"
   }, rows.map((row, idx) => {
     const trend = bisnisTrendForMonth(row, monthIdx);
+    const cap = bisnisCapaianForMonth(capById[row.id], row, monthIdx);
     const isOpen = openIdx === idx;
     return /*#__PURE__*/React.createElement("div", {
       key: row.id,
@@ -4670,15 +4710,16 @@ function BisnisProsesCard({
       className: "flex items-center gap-2 flex-wrap"
     }, /*#__PURE__*/React.createElement("p", {
       className: "text-sm font-semibold text-slate-800 truncate"
-    }, row.label), trend && trend.hasReal && /*#__PURE__*/React.createElement("span", {
-      className: `inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${trend.up ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"}`
+    }, row.label), cap && cap.capaianRealisasi !== null && cap.capaianRealisasi !== undefined && /*#__PURE__*/React.createElement("span", {
+      title: "% Capaian Realisasi (sesuai tab Capaian pada Data Input)",
+      className: `inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${cap.capaianRealisasi >= 100 ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"}`
     }, /*#__PURE__*/React.createElement(Icon, {
-      name: trend.up ? "trending-up" : "trending-down",
+      name: cap.capaianRealisasi >= 100 ? "trending-up" : "trending-down",
       size: 10,
       strokeWidth: 2.5
-    }), fmtNum(trend.value, 1), " ", unit)), /*#__PURE__*/React.createElement("p", {
+    }), "%Realisasi ", fmtNum(cap.capaianRealisasi, 1), "%")), /*#__PURE__*/React.createElement("p", {
       className: "text-xs text-slate-400 mt-0.5"
-    }, trend ? trend.period ? `${trend.period} · Prognosa ${fmtNum(trend.prognosa, 1)} ${unit}` : `Prognosa ${fmtNum(trend.prognosa, 1)} ${unit}` : "Belum ada data")), /*#__PURE__*/React.createElement("button", {
+    }, cap ? `${cap.period ? cap.period + " · " : ""}%Prognosa ${cap.capaianPrognosa === null || cap.capaianPrognosa === undefined ? "-" : fmtNum(cap.capaianPrognosa, 1) + "%"}` : "Belum ada data")), /*#__PURE__*/React.createElement("button", {
       onClick: () => setOpenIdx(isOpen ? null : idx),
       className: "w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center flex-shrink-0 transition",
       "aria-label": "Detail"
@@ -4695,13 +4736,13 @@ function BisnisProsesCard({
       className: "text-[10px] font-semibold text-slate-500"
     }, q), /*#__PURE__*/React.createElement("p", {
       className: "text-xs text-slate-600 mt-0.5"
-    }, "Prognosa ", /*#__PURE__*/React.createElement("span", {
+    }, "%Prognosa ", /*#__PURE__*/React.createElement("span", {
       className: "font-semibold text-slate-800"
-    }, fmtNum(row[q + "Prognosa"], 1), unit)), /*#__PURE__*/React.createElement("p", {
+    }, capById[row.id] && capById[row.id][q + "CapaianPrognosa"] !== null && capById[row.id][q + "CapaianPrognosa"] !== undefined ? `${fmtNum(capById[row.id][q + "CapaianPrognosa"], 1)}%` : "-")), /*#__PURE__*/React.createElement("p", {
       className: "text-xs text-slate-600"
-    }, "Realisasi", " ", /*#__PURE__*/React.createElement("span", {
+    }, "%Realisasi", " ", /*#__PURE__*/React.createElement("span", {
       className: "font-semibold text-slate-800"
-    }, row[q + "Realisasi"] !== null && row[q + "Realisasi"] !== undefined ? `${fmtNum(row[q + "Realisasi"], 1)}${unit}` : "-"))))));
+    }, capById[row.id] && capById[row.id][q + "CapaianRealisasi"] !== null && capById[row.id][q + "CapaianRealisasi"] !== undefined ? `${fmtNum(capById[row.id][q + "CapaianRealisasi"], 1)}%` : "-"))))));
   })));
 }
 const AKUMULASI_CATS = ["pemeliharaan", "administrasi", "investasi", "kimia", "lainnya"];
@@ -4710,8 +4751,10 @@ const AKUMULASI_CATS = ["pemeliharaan", "administrasi", "investasi", "kimia", "l
 const PROGRAM_AKUM_CATS = ["fisik", "prk"];
 // Kategori yang sub-tab "Akumulasi Bulanan"-nya memakai format Rekap (Bulan/Tahun per baris).
 const REKAP_AKUMULASI_CATS = ["investasi"];
+// Label kolom bulan target pada tabel Program Anggaran, per kategori.
+const PROGRAM_TARGET_COL_LABELS = { fisik: "Bulan Target Fisik", prk: "Bulan Target Terkontrak" };
 // Kategori tanpa tombol "Hitung Prognosa" (prognosa diisi manual sesuai kontrak/realisasi).
-const NO_HITUNG_PROGNOSA_CATS = ["investasi"];
+const NO_HITUNG_PROGNOSA_CATS = ["investasi", "bisnis"];
 const CAPAIAN_ITEM_CATS = ["pemeliharaan", "administrasi", "investasi"];
 const CAPAIAN_PROGRAMAO_CATS = ["fisik", "prk"];
 const CAPAIAN_CATS = ["operasi", "kimia", "lainnya", "bisnis", ...CAPAIAN_ITEM_CATS, ...CAPAIAN_PROGRAMAO_CATS];
@@ -5279,6 +5322,7 @@ function BerandaPage({
   store,
   selectedYears,
   setYear,
+  setYearAll,
   setActiveMenu,
   setActiveCatId,
   uiConfig,
@@ -5535,7 +5579,10 @@ function BerandaPage({
     capaianPctList: mainCapaianPctList,
     years: store[mainMetric.catId].years,
     selectedYear: selectedYears[mainMetric.catId],
-    onSelectYear: y => setYear(mainMetric.catId, y),
+    onSelectYear: y => {
+      // Selaraskan seluruh kartu Beranda ke tahun yang dipilih pada grafik.
+      if (setYearAll) setYearAll(y);else setYear(mainMetric.catId, y);
+    },
     onActiveChange: setSelectedMonthIdx
   }), /*#__PURE__*/React.createElement("div", {
     key: isTopChipMain ? "side-compact" : "side-mixed",
@@ -5633,6 +5680,7 @@ function BerandaPage({
     className: "lg:col-span-2"
   }, /*#__PURE__*/React.createElement(BisnisProsesCard, {
     rows: store[ALL_METRICS.bisnis.catId].byYear[selectedYears[ALL_METRICS.bisnis.catId]],
+    capaianRows: computeLainnyaCapaianItemRows(ALL_METRICS.bisnis.cat, selectedYears[ALL_METRICS.bisnis.catId], store[ALL_METRICS.bisnis.catId].byYear[selectedYears[ALL_METRICS.bisnis.catId]] || [], store.capaianModes, store.capaianManualValues),
     unit: ALL_METRICS.bisnis.cat.unit || "",
     titleOverride: tabLabel("bisnis", ALL_METRICS.bisnis.cat),
     openIdx: bisnisOpenIdx,
@@ -6431,7 +6479,8 @@ function ProgramAOTable({
   onCell,
   onAddRow,
   onDeleteRow,
-  itemColumnLabel
+  itemColumnLabel,
+  targetColumnLabel
 }) {
   const [pendingId, setPendingId] = useState(null);
   const [deleteMode, setDeleteMode] = useState(false);
@@ -6496,7 +6545,7 @@ function ProgramAOTable({
     className: "border-b border-slate-200 px-3 py-2 text-left font-medium min-w-[220px]"
   }, itemColumnLabel || "Item Program AO"), /*#__PURE__*/React.createElement("th", {
     className: "border-b border-l border-slate-200 px-3 py-2 text-left font-medium min-w-[140px]"
-  }, "Bulan Target Fisik"), /*#__PURE__*/React.createElement("th", {
+  }, targetColumnLabel || "Bulan Target Fisik"), /*#__PURE__*/React.createElement("th", {
     className: "border-b border-l border-slate-200 px-3 py-2 text-left font-medium min-w-[140px]"
   }, "Realisasi Bulan"), /*#__PURE__*/React.createElement("th", {
     className: "border-b border-l border-slate-200 px-3 py-2 text-left font-medium min-w-[140px]"
@@ -6870,13 +6919,13 @@ function ExportImportButtons({
     onChange: handleImportFile
   }));
 }
-function exportProgramAOToExcel(programLabel, rows, itemColumnLabel) {
+function exportProgramAOToExcel(programLabel, rows, itemColumnLabel, targetColumnLabel) {
   if (typeof XLSX === "undefined") {
     alert("Pustaka Excel belum termuat. Periksa koneksi internet lalu muat ulang halaman.");
     return;
   }
   const label = programLabel || "Program AO";
-  const aoa = [[itemColumnLabel || "Item Program AO", "Bulan Target Fisik", "Realisasi Bulan", "Prognosa Bulan"]];
+  const aoa = [[itemColumnLabel || "Item Program AO", targetColumnLabel || "Bulan Target Fisik", "Realisasi Bulan", "Prognosa Bulan"]];
   rows.forEach(r => {
     aoa.push([r.item || "", r.bulanTarget || "", r.bulanRealisasi || "", r.bulanPrognosa || ""]);
   });
@@ -6911,7 +6960,8 @@ function ProgramAOExportImportButtons({
   programLabel,
   rows,
   onReplaceRows,
-  itemColumnLabel
+  itemColumnLabel,
+  targetColumnLabel
 }) {
   const itemLabel = itemColumnLabel || "Item Program AO";
   const fileRef = React.useRef(null);
@@ -6949,7 +6999,7 @@ function ProgramAOExportImportButtons({
   };
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
     type: "button",
-    onClick: () => exportProgramAOToExcel(programLabel, rows, itemLabel),
+    onClick: () => exportProgramAOToExcel(programLabel, rows, itemLabel, targetColumnLabel),
     title: `Ekspor ${itemLabel} ke file Excel`,
     className: "px-4 py-2 rounded-full text-sm font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition flex items-center gap-1.5"
   }, /*#__PURE__*/React.createElement(Icon, {
@@ -7106,7 +7156,8 @@ function AnalisaPage({
     year: year,
     rows: programAORows,
     onReplaceRows: newRows => onProgramAOReplaceRows(cat.id, year, newRows),
-    itemColumnLabel: cat.id === "prk" ? "Item Program AI" : "Item Program AO"
+    itemColumnLabel: cat.id === "prk" ? "Item Program AI" : "Item Program AO",
+    targetColumnLabel: PROGRAM_TARGET_COL_LABELS[cat.id] || "Bulan Target Fisik"
   }))), isProgramAOCat ? /*#__PURE__*/React.createElement(React.Fragment, null, !(CAPAIAN_PROGRAMAO_CATS.includes(cat.id) && showCapaian) && /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-2 flex-wrap"
   }, visibleSubTabs.map(s => /*#__PURE__*/React.createElement("button", {
@@ -7126,7 +7177,8 @@ function AnalisaPage({
     onCell: (ridx, field, value) => onProgramAOCell(cat.id, year, ridx, field, value),
     onAddRow: () => onProgramAOAddRow(cat.id, year),
     onDeleteRow: ridx => onProgramAODeleteRow(cat.id, year, ridx),
-    itemColumnLabel: cat.id === "prk" ? "Item Program AI" : "Item Program AO"
+    itemColumnLabel: cat.id === "prk" ? "Item Program AI" : "Item Program AO",
+    targetColumnLabel: PROGRAM_TARGET_COL_LABELS[cat.id] || "Bulan Target Fisik"
   }) : /*#__PURE__*/React.createElement(FisikRekapTable, {
     cat: cat,
     rows: rows,
@@ -9600,6 +9652,17 @@ function PerformUApp() {
     ...prev,
     [catId]: year
   }));
+  // Beranda: mengganti tahun pada grafik utama menyelaraskan SELURUH kartu ke tahun yang sama,
+  // sehingga tampilan Beranda konsisten satu tahun + satu bulan terpilih. Kategori yang belum
+  // punya data tahun tsb dibiarkan pada tahunnya sendiri.
+  const setYearAll = year => setSelectedYears(prev => {
+    const next = { ...prev };
+    Object.keys(next).forEach(catId => {
+      const cur = store[catId];
+      if (!cur || !Array.isArray(cur.years) || cur.years.includes(year)) next[catId] = year;
+    });
+    return next;
+  });
   const addYear = catId => {
     const cur = store[catId];
     const nextYear = Math.max(...cur.years) + 1;
@@ -10020,6 +10083,7 @@ function PerformUApp() {
     store: store,
     selectedYears: selectedYears,
     setYear: setYear,
+    setYearAll: setYearAll,
     setActiveMenu: setActiveMenu,
     setActiveCatId: setActiveCatId,
     uiConfig: uiConfig,
