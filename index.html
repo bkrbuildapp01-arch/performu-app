@@ -851,6 +851,20 @@ function nkoResolveNode(node, store, year, monthIdx, useForecast) {
   }
   return { rencana: node.rencana, realisasi: node.prognosa };
 }
+// Kategori yang TIDAK memerlukan pemilihan baris pada Form NKO:
+//  - AGGREGATE: nilai diambil dari TOTAL seluruh item secara akumulasi (tab "Akumulasi Bulanan").
+//  - KPI_ROW  : nilai diambil otomatis dari baris "KPI" pada tab "Akumulasi".
+const NKO_LINK_AGGREGATE_CATS = ["pemeliharaan", "administrasi", "investasi"];
+const NKO_LINK_KPI_ROW_CATS = ["kimia"];
+const NKO_LINK_AUTO_ROW_NOTE = {
+  pemeliharaan: "Total seluruh item (akumulasi)",
+  administrasi: "Total seluruh item (akumulasi)",
+  investasi: "Total seluruh item (akumulasi)",
+  kimia: "Baris KPI pada tab Akumulasi"
+};
+function nkoCatUsesAutoRow(catId) {
+  return NKO_LINK_AGGREGATE_CATS.includes(catId) || NKO_LINK_KPI_ROW_CATS.includes(catId);
+}
 function nkoLinkedValues(node, store, year, monthIdx) {
   if (node.sourceType !== "linked" || !node.linkedCatId || !store[node.linkedCatId]) return null;
   const cat = CATEGORIES.find(c => c.id === node.linkedCatId);
@@ -871,6 +885,41 @@ function nkoLinkedValues(node, store, year, monthIdx) {
     return { rencana: row.target, realisasi: row.realisasi, forecast: row.forecast };
   }
   if (cat.type === "itemGrouped") {
+    const periodsAll = cat.periods;
+    const periodKeyFor = pickRow => {
+      if (mIdx !== null) return periodsAll.length === 12 ? periodsAll[mIdx] : periodsAll[Math.floor(mIdx / 3)];
+      return periodsAll.filter(p => pickRow(p)).slice(-1)[0];
+    };
+    // Kategori biaya (Pemeliharaan/Administrasi/Investasi): KPI NKO memakai TOTAL seluruh
+    // item secara AKUMULASI s.d. bulan terpilih — sama dengan tab "Akumulasi Bulanan" pada
+    // Data Input. Pemilihan baris tidak berlaku.
+    if (NKO_LINK_AGGREGATE_CATS.includes(cat.id)) {
+      const akum = accumulateItemRows(cat, rows);
+      const pk = periodKeyFor(p => akum.some(r => r[p + "Realisasi"] !== null && r[p + "Realisasi"] !== undefined));
+      if (!pk) return null;
+      let rencana = null, realisasi = null, forecast = null;
+      akum.forEach(r => {
+        const tv = r[pk + "Prognosa"], rv = r[pk + "Realisasi"], fv = r[pk + "Forecast"];
+        if (tv !== null && tv !== undefined) rencana = (rencana || 0) + tv;
+        if (rv !== null && rv !== undefined) realisasi = (realisasi || 0) + rv;
+        if (fv !== null && fv !== undefined) forecast = (forecast || 0) + fv;
+      });
+      return { rencana, realisasi, forecast, rowLabel: "Total (akumulasi)" };
+    }
+    // Biaya Kimia dan Pelumas: otomatis memakai baris KPI pada tab "Akumulasi".
+    if (NKO_LINK_KPI_ROW_CATS.includes(cat.id)) {
+      const targets = store.kimiaKpiTargets && store.kimiaKpiTargets[year] ? store.kimiaKpiTargets[year] : {};
+      const kpi = computeKimiaKpiRow(cat, year, rows, targets);
+      const idx = mIdx !== null ? mIdx : (() => {
+        for (let k = kpi.length - 1; k >= 0; k--) {
+          if (kpi[k].realisasi !== null && kpi[k].realisasi !== undefined) return k;
+        }
+        return -1;
+      })();
+      const entry = idx >= 0 ? kpi[idx] : null;
+      if (!entry) return null;
+      return { rencana: entry.target, realisasi: entry.realisasi, forecast: entry.prognosa, rowLabel: "KPI (Akumulasi)" };
+    }
     // Perlu baris tertentu (mis. "Efektivitas Proses Produksi") dan periode tertentu (bulan/kuartal)
     const targetRow = node.linkedRowLabel ? rows.find(r => r.label === node.linkedRowLabel) : rows[0];
     if (!targetRow) return null;
@@ -893,7 +942,7 @@ function nkoLinkedValues(node, store, year, monthIdx) {
 // pengguna di Data Input otomatis ikut muncul di sini.
 function nkoLinkedRowOptions(catId, store, year) {
   const cat = CATEGORIES.find(c => c.id === catId);
-  if (!cat || cat.type !== "itemGrouped") return [];
+  if (!cat || cat.type !== "itemGrouped" || nkoCatUsesAutoRow(catId)) return [];
   const labels = [];
   const push = label => {
     const v = (label === null || label === undefined ? "" : String(label)).trim();
@@ -7385,7 +7434,8 @@ function linkedGroupOptionsForCat(catId) {
 }
 function catNeedsRowPicker(catId) {
   const cat = CATEGORIES.find(c => c.id === catId);
-  return cat && cat.type === "itemGrouped";
+  // Kategori biaya & Kimia mengambil datanya otomatis, jadi pemilihan baris dinonaktifkan.
+  return !!cat && cat.type === "itemGrouped" && !nkoCatUsesAutoRow(catId);
 }
 
 /* --- Struktur tab: tree editor for categories / items / sub-items --- */
@@ -7696,7 +7746,11 @@ function NkoFormulaRow({ node, onUpdate, disableManualRP, compact, hasSubItems, 
         onChange: handleLinkedRowChange,
         className: "w-48 shrink-0",
         options: [{ value: "", label: "Pilih baris..." }, ...nkoLinkedRowOptions(node.linkedCatId, store, year)]
-      })
+      }),
+      node.linkedCatId && nkoCatUsesAutoRow(node.linkedCatId) && E("span", {
+        className: "w-48 shrink-0 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 truncate",
+        title: `Pemilihan baris tidak diperlukan — data diambil otomatis: ${NKO_LINK_AUTO_ROW_NOTE[node.linkedCatId]}`
+      }, NKO_LINK_AUTO_ROW_NOTE[node.linkedCatId])
     ),
     !isNA && formulaTypeLocked && E("span", {
       className: "w-56 shrink-0 text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-2.5 py-1.5",
@@ -7942,6 +7996,10 @@ function nkoStructureToStructRows(structure) {
 function buildNkoReferenceAoa(store, year) {
   const aoa = [["ID Tab Terhubung", "Nama Tab", "Kolom yang Diisi", "Nilai yang Sah", "Keterangan"]];
   CATEGORIES.filter(c => c.id !== "nko").forEach(cat => {
+    if (nkoCatUsesAutoRow(cat.id)) {
+      aoa.push([cat.id, cat.title, "(otomatis)", "", `Tidak perlu diisi — data diambil otomatis: ${NKO_LINK_AUTO_ROW_NOTE[cat.id]}`]);
+      return;
+    }
     if (cat.type === "itemGrouped") {
       const opts = nkoLinkedRowOptions(cat.id, store, year);
       if (!opts.length) {
