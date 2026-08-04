@@ -395,6 +395,7 @@ function nkoNewSubItem(overrides) {
     sourceType: "manual",
     linkedCatId: "",
     linkedGroupKey: "",
+    linkedRowLabel: "",
     ...overrides
   };
 }
@@ -412,6 +413,7 @@ function nkoNewItem(overrides) {
     sourceType: "manual",
     linkedCatId: "",
     linkedGroupKey: "",
+    linkedRowLabel: "",
     subItems: [],
     ...overrides
   };
@@ -886,7 +888,7 @@ function nkoLinkedValues(node, store, year, monthIdx) {
   }
   return null;
 }
-// Daftar pilihan baris untuk "Ambil dari Analisa" diambil dari baris NYATA pada Data Input
+// Daftar pilihan baris untuk "Ambil dari Data Input" diambil dari baris NYATA pada Data Input
 // (store) tahun terkait, bukan dari daftar contoh (defaultItems). Baris yang ditambah/diubah
 // pengguna di Data Input otomatis ikut muncul di sini.
 function nkoLinkedRowOptions(catId, store, year) {
@@ -7674,7 +7676,7 @@ function NkoFormulaRow({ node, onUpdate, disableManualRP, compact, hasSubItems, 
       value: node.sourceType,
       onChange: handleSourceTypeChange,
       className: "w-32 shrink-0",
-      options: [{ value: "manual", label: "Input manual" }, { value: "linked", label: "Ambil dari Analisa" }, { value: "na", label: "N/A" }]
+      options: [{ value: "manual", label: "Input manual" }, { value: "linked", label: "Ambil dari Data Input" }, { value: "na", label: "N/A" }]
     }),
     isLinked && E(React.Fragment, null,
       E(NkoSelect, {
@@ -7915,37 +7917,64 @@ function nkoStructureToStructRows(structure) {
   (structure.categories || []).forEach(cat => {
     rows.push({
       level: "kategori", num: cat.num || "", label: cat.label || "", unit: cat.unit || "%",
-      weight: cat.weight || 0, formulaType: "", capMax: "", sourceType: "", linkedCatId: "", linkedGroupKey: ""
+      weight: cat.weight || 0, formulaType: "", capMax: "", sourceType: "", linkedCatId: "", linkedGroupKey: "", linkedRowLabel: ""
     });
     (cat.items || []).forEach(item => {
       rows.push({
         level: "item", num: "", label: item.label || "", unit: item.unit || "%",
         weight: item.weight || 0, formulaType: item.formulaType || "normal", capMax: item.capMax != null ? item.capMax : 110,
-        sourceType: item.sourceType || "manual", linkedCatId: item.linkedCatId || "", linkedGroupKey: item.linkedGroupKey || ""
+        sourceType: item.sourceType || "manual", linkedCatId: item.linkedCatId || "", linkedGroupKey: item.linkedGroupKey || "", linkedRowLabel: item.linkedRowLabel || ""
       });
       (item.subItems || []).forEach(sub => {
         rows.push({
           level: "sub", num: "", label: sub.label || "", unit: sub.unit || "%",
           weight: "", formulaType: sub.formulaType || "normal", capMax: sub.capMax != null ? sub.capMax : 110,
-          sourceType: sub.sourceType || "manual", linkedCatId: sub.linkedCatId || "", linkedGroupKey: sub.linkedGroupKey || ""
+          sourceType: sub.sourceType || "manual", linkedCatId: sub.linkedCatId || "", linkedGroupKey: sub.linkedGroupKey || "", linkedRowLabel: sub.linkedRowLabel || ""
         });
       });
     });
   });
   return rows;
 }
-function exportNkoStructureToExcel(structure, year) {
+// Sheet referensi: daftar nilai sah untuk kolom "Baris Terhubung" (kategori bertipe item,
+// diambil dari baris nyata di Data Input) dan "Kunci Grup Terhubung" (kategori bertipe grup),
+// supaya pengisian file impor tidak salah ketik.
+function buildNkoReferenceAoa(store, year) {
+  const aoa = [["ID Tab Terhubung", "Nama Tab", "Kolom yang Diisi", "Nilai yang Sah", "Keterangan"]];
+  CATEGORIES.filter(c => c.id !== "nko").forEach(cat => {
+    if (cat.type === "itemGrouped") {
+      const opts = nkoLinkedRowOptions(cat.id, store, year);
+      if (!opts.length) {
+        aoa.push([cat.id, cat.title, "Baris Terhubung", "", "Belum ada baris pada Data Input"]);
+        return;
+      }
+      opts.forEach(o => aoa.push([cat.id, cat.title, "Baris Terhubung", o.value, `Baris pada Data Input tab "${cat.title}"`]));
+    } else {
+      const opts = linkedGroupOptionsForCat(cat.id).filter(o => o.value);
+      if (!opts.length) {
+        aoa.push([cat.id, cat.title, "Kunci Grup Terhubung", "", "Tidak ada pilihan grup"]);
+        return;
+      }
+      opts.forEach(o => aoa.push([cat.id, cat.title, "Kunci Grup Terhubung", o.value, o.label]));
+    }
+  });
+  return aoa;
+}
+function exportNkoStructureToExcel(structure, year, store) {
   if (typeof XLSX === "undefined") {
     alert("Pustaka Excel belum termuat. Periksa koneksi internet lalu muat ulang halaman.");
     return;
   }
-  const header = ["Level (kategori/item/sub)", "No", "Nama", "Satuan", "Bobot", "Tipe Formula", "Cap Maksimum", "Sumber Data", "ID Tab Terhubung", "Kunci Grup Terhubung"];
+  const header = ["Level (kategori/item/sub)", "No", "Nama", "Satuan", "Bobot", "Tipe Formula", "Cap Maksimum", "Sumber Data", "ID Tab Terhubung", "Kunci Grup Terhubung", "Baris Terhubung"];
   const structRows = nkoStructureToStructRows(structure);
-  const aoa = [header, ...structRows.map(r => [r.level, r.num, r.label, r.unit, r.weight, r.formulaType, r.capMax, r.sourceType, r.linkedCatId, r.linkedGroupKey])];
+  const aoa = [header, ...structRows.map(r => [r.level, r.num, r.label, r.unit, r.weight, r.formulaType, r.capMax, r.sourceType, r.linkedCatId, r.linkedGroupKey, r.linkedRowLabel])];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"] = [{ wch: 12 }, { wch: 6 }, { wch: 34 }, { wch: 8 }, { wch: 8 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 16 }];
+  ws["!cols"] = [{ wch: 12 }, { wch: 6 }, { wch: 34 }, { wch: 8 }, { wch: 8 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 34 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Struktur NKO");
+  const refWs = XLSX.utils.aoa_to_sheet(buildNkoReferenceAoa(store, year));
+  refWs["!cols"] = [{ wch: 16 }, { wch: 28 }, { wch: 22 }, { wch: 40 }, { wch: 40 }];
+  XLSX.utils.book_append_sheet(wb, refWs, "Referensi Baris");
   XLSX.writeFile(wb, `Struktur Form NKO ${year}.xlsx`);
 }
 function importNkoStructureFromAoa(aoa) {
@@ -7963,22 +7992,23 @@ function importNkoStructureFromAoa(aoa) {
     const sourceType = row[7] ? String(row[7]).trim() : "manual";
     const linkedCatId = row[8] === null || row[8] === undefined ? "" : String(row[8]);
     const linkedGroupKey = row[9] === null || row[9] === undefined ? "" : String(row[9]);
+    const linkedRowLabel = row[10] === null || row[10] === undefined ? "" : String(row[10]).trim();
     if (level === "kategori") {
       curCat = nkoNewCategory({ num: row[1] || (categories.length + 1), label, weight: weight || 0, unit, items: [] });
       categories.push(curCat);
       curItem = null;
     } else if (level === "item") {
       if (!curCat) { curCat = nkoNewCategory({ num: categories.length + 1, label: "Kategori", weight: 0, unit: "%", items: [] }); categories.push(curCat); }
-      curItem = nkoNewItem({ label, unit, weight: weight || 0, formulaType, capMax, sourceType, linkedCatId, linkedGroupKey, subItems: [] });
+      curItem = nkoNewItem({ label, unit, weight: weight || 0, formulaType, capMax, sourceType, linkedCatId, linkedGroupKey, linkedRowLabel, subItems: [] });
       curCat.items.push(curItem);
     } else if (level === "sub") {
       if (!curItem) return;
-      curItem.subItems.push(nkoNewSubItem({ label, unit, formulaType, capMax, sourceType, linkedCatId, linkedGroupKey }));
+      curItem.subItems.push(nkoNewSubItem({ label, unit, formulaType, capMax, sourceType, linkedCatId, linkedGroupKey, linkedRowLabel }));
     }
   });
   return { categories };
 }
-function NkoStructureExportImportButtons({ structure, year, onReplaceStructure }) {
+function NkoStructureExportImportButtons({ structure, year, store, onReplaceStructure }) {
   const E = React.createElement;
   const fileRef = React.useRef(null);
   const handleImportFile = e => {
@@ -7999,7 +8029,7 @@ function NkoStructureExportImportButtons({ structure, year, onReplaceStructure }
           alert("File Excel kosong.");
           return;
         }
-        if (!window.confirm("Impor akan mengganti struktur (kategori, item, sub item, bobot, dan rumus) Form NKO tahun ini di seluruh bulan. Nilai rencana/realisasi/pencapaian yang sudah diisi tidak akan ikut berubah dan tetap perlu diisi ulang untuk item baru. Lanjutkan impor?")) return;
+        if (!window.confirm("Impor akan mengganti struktur (kategori, item, sub item, bobot, rumus, dan baris terhubung) Form NKO tahun ini di seluruh bulan. Nilai rencana/realisasi/pencapaian yang sudah diisi tidak akan ikut berubah dan tetap perlu diisi ulang untuk item baru. Lanjutkan impor?")) return;
         onReplaceStructure(importNkoStructureFromAoa(aoa));
       } catch (err) {
         alert("Gagal membaca file Excel: " + (err && err.message ? err.message : err));
@@ -8010,7 +8040,7 @@ function NkoStructureExportImportButtons({ structure, year, onReplaceStructure }
   return E(React.Fragment, null,
     E("button", {
       type: "button",
-      onClick: () => exportNkoStructureToExcel(structure, year),
+      onClick: () => exportNkoStructureToExcel(structure, year, store),
       title: "Ekspor struktur Form NKO (tanpa isian) ke file Excel",
       className: "px-4 py-2 rounded-full text-sm font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition flex items-center gap-1.5"
     }, E(Icon, { name: "download", size: 14 }), " Ekspor"),
@@ -8103,6 +8133,7 @@ function LaporanPage({ nkoState, onChangeNkoState, selectedYears, store, readOnl
         !readOnly && E(NkoStructureExportImportButtons, {
           structure,
           year,
+          store,
           onReplaceStructure: replaceStructure
         }),
         E(YearBar, {
