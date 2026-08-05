@@ -2346,7 +2346,9 @@ function StatCard({
   }, "Prognosa Akhir Periode"), /*#__PURE__*/React.createElement("p", {
     className: "text-xs font-bold text-slate-700 tabular-nums flex items-center justify-end gap-1"
   }, /*#__PURE__*/React.createElement(AnimatedNumber, {
-    value: round1(trend.prognosaAkhir),
+    // Dibulatkan mengikuti jumlah desimal kategori (bukan round1), agar angka pada kartu
+    // sama persis dengan tabel akumulasi di Data Input — mis. 4,857 bukan 4,900.
+    value: roundByDecimals(trend.prognosaAkhir, cat.decimals),
     decimals: cat.decimals
   }), capaianAkhirBadge("text-[9px]")))) : compact || hero ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "flex items-baseline gap-1 min-w-0"
@@ -2368,7 +2370,9 @@ function StatCard({
   }, /*#__PURE__*/React.createElement("span", {
     className: `${hero ? "text-xs" : "text-[10px]"} font-bold text-slate-700 tabular-nums`
   }, /*#__PURE__*/React.createElement(AnimatedNumber, {
-    value: round1(trend.prognosaAkhir),
+    // Dibulatkan mengikuti jumlah desimal kategori (bukan round1), agar angka pada kartu
+    // sama persis dengan tabel akumulasi di Data Input — mis. 4,857 bukan 4,900.
+    value: roundByDecimals(trend.prognosaAkhir, cat.decimals),
     decimals: cat.decimals
   }), " ", unit), capaianAkhirBadge("text-[9px]")))) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "flex items-baseline gap-1.5"
@@ -2390,7 +2394,9 @@ function StatCard({
   }, /*#__PURE__*/React.createElement("span", {
     className: "text-xs font-bold text-slate-700 tabular-nums"
   }, /*#__PURE__*/React.createElement(AnimatedNumber, {
-    value: round1(trend.prognosaAkhir),
+    // Dibulatkan mengikuti jumlah desimal kategori (bukan round1), agar angka pada kartu
+    // sama persis dengan tabel akumulasi di Data Input — mis. 4,857 bukan 4,900.
+    value: roundByDecimals(trend.prognosaAkhir, cat.decimals),
     decimals: cat.decimals
   }), " ", unit), capaianAkhirBadge("text-[10px]")))) : /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-400 py-3"
