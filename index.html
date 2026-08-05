@@ -1033,19 +1033,31 @@ function nkoComputeStructureResult(structure, store, year, monthIdx, useForecast
   return { categories, totalWeight: round4(totalWeight), totalNilai: round4(totalNilai) };
 }
 function nkoHasAnyRealisasiForMonth(structure, store, year, monthIdx) {
-  // Cek apakah ada minimal satu KPI/sub-KPI dengan data realisasi terisi pada bulan tsb.
-  let found = false;
+  // NKO baru dianggap "terealisasi" pada suatu bulan bila SELURUH KPI yang mengambil data dari
+  // Data Input (sourceType "linked") sudah punya realisasi di bulan tsb. Kalau salah satu sumber
+  // (mis. EAF) belum terisi, NKO realisasi dikosongkan — tanpa aturan ini NKO tetap menampilkan
+  // angka parsial untuk bulan-bulan yang datanya belum masuk.
+  let anyFilled = false;
+  let linkedTotal = 0;
+  let linkedFilled = 0;
+  const check = node => {
+    if (!node || node.sourceType === "na") return;
+    const resolved = nkoResolveNode(node, store, year, monthIdx, false);
+    const has = resolved.realisasi !== null && resolved.realisasi !== undefined;
+    if (has) anyFilled = true;
+    if (node.sourceType === "linked") {
+      linkedTotal += 1;
+      if (has) linkedFilled += 1;
+    }
+  };
   (structure.categories || []).forEach(cat => {
     (cat.items || []).forEach(item => {
-      const resolved = nkoResolveNode(item, store, year, monthIdx, false);
-      if (resolved.realisasi !== null && resolved.realisasi !== undefined) found = true;
-      (item.subItems || []).forEach(s => {
-        const sResolved = nkoResolveNode(s, store, year, monthIdx, false);
-        if (sResolved.realisasi !== null && sResolved.realisasi !== undefined) found = true;
-      });
+      const subs = item.subItems || [];
+      if (subs.length) subs.forEach(check);else check(item);
     });
   });
-  return found;
+  if (linkedTotal > 0) return linkedFilled === linkedTotal;
+  return anyFilled;
 }
 function nkoComputeMonthlyRows(nkoState, store, year) {
   // Bangun 12 baris bulanan untuk tab "NKO" di menu Analisa: Target = total bobot,
@@ -1895,7 +1907,19 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
     const prognosaAkhir = akhirLast ? lastValueInRange(rows, semStart, semEnd, r => r && r.forecast) : hasAkum ? lastValueInRange(rows, semStart, semEnd, r => r && r.akumForecast) : rows.slice(semStart, semEnd).reduce((s, r) => s + (r.forecast || 0), 0);
     const targetLatest = row.target;
     const mode = getCapaianMode(capaianModes, cat.id);
-    const pair = resolveCapaianPair(mode, capaianManualValues, cat.id, row.bulan, realisasi, row.forecast, targetLatest);
+    // Fisik Pemeliharaan / PRK Investasi Terkontrak: %capaian dihitung dari kolom AKUMULASI,
+    // sama persis dengan tabel Capaian di Data Input (computeProgramAOCapaianRows). Memakai
+    // nilai bulanan membuat badge hilang pada bulan yang targetnya 0 (mis. Juni tanpa program).
+    const capBase = PROGRAM_AKUM_CATS.includes(cat.id) && row.akumTarget !== undefined ? {
+      target: row.akumTarget,
+      realisasi: row.akumRealisasi,
+      forecast: row.akumForecast
+    } : {
+      target: targetLatest,
+      realisasi: realisasi,
+      forecast: row.forecast
+    };
+    const pair = resolveCapaianPair(mode, capaianManualValues, cat.id, row.bulan, capBase.realisasi, capBase.forecast, capBase.target);
     const capaianPct = isProgFallback ? pair.capaianPrognosa : pair.capaianRealisasi;
     return {
       latest,
@@ -2128,7 +2152,9 @@ function CapaianBadge({
         ? round1((trend.latest - trend.targetLatest) / trend.targetLatest * 100)
         : null);
   if (capaianPct === null || capaianPct === undefined) return null;
-  const up = capaianPct >= 0;
+  // Nilai ini adalah %CAPAIAN (100% = tepat target), jadi ambang warnanya 100 — bukan 0.
+  // Sebelumnya `capaianPct >= 0` membuat capaian 66% pun tampil hijau.
+  const up = capaianPct >= 100;
   const colorClass = isProg
     ? "bg-slate-100 text-slate-400 opacity-70"
     : (up ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600");
@@ -2139,7 +2165,7 @@ function CapaianBadge({
       ...style
     },
     title: isProg ? "Capaian prognosa terhadap target (realisasi belum tersedia untuk periode ini)" : "Capaian realisasi terhadap target"
-  }, capaianPct >= 0 ? "+" : "-", Math.abs(capaianPct), "%");
+  }, fmtNum(capaianPct, 1), "%");
 }
 const COLOR_BADGE = {
   emerald: "bg-emerald-50 text-emerald-600",
@@ -6015,7 +6041,9 @@ function accumulateItemRows(cat, rows) {
 function ItemGroupedAkumulasiTable({
   cat,
   rows,
-  visiblePeriods
+  visiblePeriods,
+  capaianModes,
+  capaianManualValues
 }) {
   const akumRows = accumulateItemRows(cat, rows);
   const periods = visiblePeriods && visiblePeriods.length ? visiblePeriods : cat.periods;
@@ -6055,6 +6083,7 @@ function ItemGroupedAkumulasiTable({
         prognosaHas = true;
       }
     });
+    const totalPair = akumCapaianPair(cat, null, p, capaianModes, capaianManualValues, targetHas ? targetSum : null, realisasiHas ? realisasiSum : null, prognosaHas ? prognosaSum : null);
     return /*#__PURE__*/React.createElement(React.Fragment, {
       key: p
     }, /*#__PURE__*/React.createElement("td", {
@@ -6063,7 +6092,7 @@ function ItemGroupedAkumulasiTable({
       className: totalCellCls
     }, realisasiHas ? fmtNum(roundByDecimals(realisasiSum, cat.decimals), cat.decimals) : "-"), /*#__PURE__*/React.createElement("td", {
       className: totalCellCls
-    }, prognosaHas ? fmtNum(roundByDecimals(prognosaSum, cat.decimals), cat.decimals) : "-"));
+    }, prognosaHas ? fmtNum(roundByDecimals(prognosaSum, cat.decimals), cat.decimals) : "-"), akumCapaianCell(totalPair.capaianRealisasi, "bg-emerald-50/60 border-emerald-100"), akumCapaianCell(totalPair.capaianPrognosa, "bg-emerald-50/60 border-emerald-100"));
   })) : null;
   return /*#__PURE__*/React.createElement("div", {
     className: "overflow-x-auto border border-slate-100 rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,0.04)]"
@@ -6079,7 +6108,7 @@ function ItemGroupedAkumulasiTable({
     className: "border-b border-slate-200 px-3 py-2 text-left font-medium min-w-[180px]"
   }, cat.labelHeader), periods.map(p => /*#__PURE__*/React.createElement("th", {
     key: p,
-    colSpan: 3,
+    colSpan: 5,
     className: "border-b border-l border-slate-200 px-3 py-2 text-center font-medium"
   }, p))), /*#__PURE__*/React.createElement("tr", {
     className: "bg-slate-50/70 text-slate-400"
@@ -6091,22 +6120,29 @@ function ItemGroupedAkumulasiTable({
     className: "border-b border-slate-200 px-3 py-1.5 text-right font-normal text-xs"
   }, "Realisasi"), /*#__PURE__*/React.createElement("th", {
     className: "border-b border-slate-200 px-3 py-1.5 text-right font-normal text-xs"
-  }, "Prognosa"))))), /*#__PURE__*/React.createElement("tbody", null, akumRows.map((r, ridx) => /*#__PURE__*/React.createElement("tr", {
+  }, "Prognosa"), /*#__PURE__*/React.createElement("th", {
+    className: "border-b border-slate-200 px-3 py-1.5 text-right font-normal text-xs min-w-[110px]"
+  }, AKUM_CAPAIAN_HEADERS[0]), /*#__PURE__*/React.createElement("th", {
+    className: "border-b border-slate-200 px-3 py-1.5 text-right font-normal text-xs min-w-[110px]"
+  }, AKUM_CAPAIAN_HEADERS[1]))))), /*#__PURE__*/React.createElement("tbody", null, akumRows.map((r, ridx) => /*#__PURE__*/React.createElement("tr", {
     key: r.id,
     className: "hover:bg-slate-50/60"
   }, /*#__PURE__*/React.createElement("td", {
     className: "border-b border-slate-100 px-3 py-1.5 text-slate-400"
   }, ridx + 1), /*#__PURE__*/React.createElement("td", {
     className: "border-b border-slate-100 px-3 py-1.5 text-slate-700 font-medium"
-  }, r.label || "-"), periods.map(p => /*#__PURE__*/React.createElement(React.Fragment, {
-    key: p
-  }, /*#__PURE__*/React.createElement("td", {
-    className: cellCls + " border-l"
-  }, fmtNum(r[p + "Prognosa"], cat.decimals)), /*#__PURE__*/React.createElement("td", {
-    className: cellCls + " font-semibold text-slate-800"
-  }, fmtNum(r[p + "Realisasi"], cat.decimals)), /*#__PURE__*/React.createElement("td", {
-    className: cellCls
-  }, fmtNum(r[p + "Forecast"], cat.decimals)))))), totalRow)), /*#__PURE__*/React.createElement("p", {
+  }, r.label || "-"), periods.map(p => {
+    const pair = akumCapaianPair(cat, r, p, capaianModes, capaianManualValues, r[p + "Prognosa"], r[p + "Realisasi"], r[p + "Forecast"]);
+    return /*#__PURE__*/React.createElement(React.Fragment, {
+      key: p
+    }, /*#__PURE__*/React.createElement("td", {
+      className: cellCls + " border-l"
+    }, fmtNum(r[p + "Prognosa"], cat.decimals)), /*#__PURE__*/React.createElement("td", {
+      className: cellCls + " font-semibold text-slate-800"
+    }, fmtNum(r[p + "Realisasi"], cat.decimals)), /*#__PURE__*/React.createElement("td", {
+      className: cellCls
+    }, fmtNum(r[p + "Forecast"], cat.decimals)), akumCapaianCell(pair.capaianRealisasi), akumCapaianCell(pair.capaianPrognosa));
+  }))), totalRow)), /*#__PURE__*/React.createElement("p", {
     className: "text-[11px] text-slate-400 px-4 py-2.5 bg-slate-50/60 border-t border-slate-100"
   }, "Tabel akumulasi dihitung otomatis dari data Bulanan dan tidak dapat diedit."));
 }
@@ -6329,12 +6365,20 @@ function KimiaAkumulasiTable({
   rows,
   kpiTargets,
   onKpiTargetChange,
-  visiblePeriods
+  visiblePeriods,
+  capaianModes,
+  capaianManualValues
 }) {
   const akumRows = accumulateItemRows(cat, rows);
   const kpiRowFull = computeKimiaKpiRow(cat, year, rows, kpiTargets);
   const periods = visiblePeriods && visiblePeriods.length ? visiblePeriods : cat.periods;
   const kpiRow = periods.map(p => kpiRowFull.find(m => m.period === p)).filter(Boolean);
+  // %Capaian baris KPI memakai perhitungan yang sama dengan tab Capaian Kimia.
+  const kpiCapaianByPeriod = {};
+  computeKimiaCapaianRows(cat, year, rows, kpiTargets, capaianModes, capaianManualValues).forEach((r, i) => {
+    const period = cat.periods[i];
+    if (period) kpiCapaianByPeriod[period] = r;
+  });
   const cellCls = "border-b border-slate-100 px-3 py-2 text-right tabular-nums text-slate-600";
 
   function kpiValueCell(val, flagged) {
@@ -6357,7 +6401,7 @@ function KimiaAkumulasiTable({
     React.createElement("th", { rowSpan: 2, className: "border-b border-slate-200 px-3 py-2 text-left font-medium w-12" }, "No"),
     React.createElement("th", { rowSpan: 2, className: "border-b border-slate-200 px-3 py-2 text-left font-medium min-w-[180px]" }, cat.labelHeader),
     periods.map(function (p) {
-      return React.createElement("th", { key: p, colSpan: 3, className: "border-b border-l border-slate-200 px-3 py-2 text-center font-medium" }, p);
+      return React.createElement("th", { key: p, colSpan: 5, className: "border-b border-l border-slate-200 px-3 py-2 text-center font-medium" }, p);
     })
   );
 
@@ -6370,7 +6414,9 @@ function KimiaAkumulasiTable({
         { key: p },
         React.createElement("th", { className: "border-b border-l border-slate-200 px-3 py-1.5 text-right font-normal text-xs" }, "Target"),
         React.createElement("th", { className: "border-b border-slate-200 px-3 py-1.5 text-right font-normal text-xs" }, "Realisasi"),
-        React.createElement("th", { className: "border-b border-slate-200 px-3 py-1.5 text-right font-normal text-xs" }, "Prognosa")
+        React.createElement("th", { className: "border-b border-slate-200 px-3 py-1.5 text-right font-normal text-xs" }, "Prognosa"),
+        React.createElement("th", { className: "border-b border-slate-200 px-3 py-1.5 text-right font-normal text-xs min-w-[110px]" }, AKUM_CAPAIAN_HEADERS[0]),
+        React.createElement("th", { className: "border-b border-slate-200 px-3 py-1.5 text-right font-normal text-xs min-w-[110px]" }, AKUM_CAPAIAN_HEADERS[1])
       );
     })
   );
@@ -6382,12 +6428,15 @@ function KimiaAkumulasiTable({
       React.createElement("td", { className: "border-b border-slate-100 px-3 py-1.5 text-slate-400" }, ridx + 1),
       React.createElement("td", { className: "border-b border-slate-100 px-3 py-1.5 text-slate-700 font-medium" }, r.label || "-"),
       periods.map(function (p) {
+        const pair = akumCapaianPair(cat, r, p, capaianModes, capaianManualValues, r[p + "Prognosa"], r[p + "Realisasi"], r[p + "Forecast"]);
         return React.createElement(
           React.Fragment,
           { key: p },
           React.createElement("td", { className: cellCls + " border-l" }, fmtNum(r[p + "Prognosa"], cat.decimals)),
           React.createElement("td", { className: cellCls + " font-semibold text-slate-800" }, fmtNum(r[p + "Realisasi"], cat.decimals)),
-          React.createElement("td", { className: cellCls }, fmtNum(r[p + "Forecast"], cat.decimals))
+          React.createElement("td", { className: cellCls }, fmtNum(r[p + "Forecast"], cat.decimals)),
+          akumCapaianCell(pair.capaianRealisasi),
+          akumCapaianCell(pair.capaianPrognosa)
         );
       })
     );
@@ -6411,7 +6460,9 @@ function KimiaAkumulasiTable({
           })
         ),
         React.createElement("td", { className: cellCls + " font-semibold text-slate-800" }, kpiValueCell(m.realisasi, m.realisasiFlag)),
-        React.createElement("td", { className: cellCls }, kpiValueCell(m.prognosa, m.prognosaFlag))
+        React.createElement("td", { className: cellCls }, kpiValueCell(m.prognosa, m.prognosaFlag)),
+        akumCapaianCell(kpiCapaianByPeriod[m.period] ? kpiCapaianByPeriod[m.period].capaianRealisasi : null),
+        akumCapaianCell(kpiCapaianByPeriod[m.period] ? kpiCapaianByPeriod[m.period].capaianPrognosa : null)
       );
     })
   );
@@ -6433,6 +6484,30 @@ function KimiaAkumulasiTable({
       " menandai bulan saat akumulasi Produksi belum mencapai target, sehingga dihitung dari Pelumas ÷ Target Pelumas."
     )
   );
+}
+// Helper bersama untuk kolom "% Capaian Akumulasi Realisasi/Prognosa" pada tab Akumulasi.
+// Memakai formula & mode capaian yang sama dengan tabel Capaian di Data Input.
+const AKUM_CAPAIAN_HEADERS = ["% Capaian Akumulasi Realisasi", "% Capaian Akumulasi Prognosa"];
+// Kategori yang mode capaiannya diatur PER BARIS (bukan per kategori).
+const PER_ROW_CAPAIAN_CATS = ["lainnya", "bisnis"];
+function akumCapaianModeKeyFor(cat, row) {
+  return PER_ROW_CAPAIAN_CATS.includes(cat.id) ? itemCapaianModeKey(cat, (row && (row.label || row.id)) || "") : cat.id;
+}
+function akumCapaianPair(cat, row, period, capaianModes, capaianManualValues, target, realisasi, prognosa) {
+  const modeKey = akumCapaianModeKeyFor(cat, row);
+  const mode = getCapaianMode(capaianModes, modeKey);
+  return resolveCapaianPair(mode, capaianManualValues, modeKey, period, realisasi, prognosa, target);
+}
+function akumCapaianCell(value, extraCls) {
+  const cls = "border-b border-slate-100 px-3 py-2 text-right tabular-nums " + (extraCls || "");
+  if (value === null || value === undefined) {
+    return React.createElement("td", { className: cls }, React.createElement("span", { className: "text-slate-300" }, "-"));
+  }
+  const good = value >= 100;
+  return React.createElement("td", { className: cls },
+    React.createElement("span", {
+      className: `inline-flex items-center text-xs font-semibold px-1.5 py-0.5 rounded-full ${good ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"}`
+    }, fmtNum(value, 1), "%"));
 }
 function itemCapaianModeKey(cat, rowIdOrLabel) {
   return `${cat.id}::${rowIdOrLabel}`;
@@ -6830,7 +6905,9 @@ function buildRekapAkumulasiRows(cat, year, rows) {
 function RekapAkumulasiTable({
   cat,
   year,
-  rows
+  rows,
+  capaianModes,
+  capaianManualValues
 }) {
   const data = buildRekapAkumulasiRows(cat, year, rows);
   const decimals = cat.decimals === undefined || cat.decimals === null ? 0 : cat.decimals;
@@ -6848,7 +6925,10 @@ function RekapAkumulasiTable({
   }, "Bulan/Tahun"), REKAP_AKUMULASI_COLS.map(c => /*#__PURE__*/React.createElement("th", {
     key: c.key,
     className: "border-b border-l border-slate-200 px-3 py-2 text-right font-medium"
-  }, c.label)))), /*#__PURE__*/React.createElement("tbody", null, data.map((r, ridx) => /*#__PURE__*/React.createElement("tr", {
+  }, c.label)), AKUM_CAPAIAN_HEADERS.map(h => /*#__PURE__*/React.createElement("th", {
+    key: h,
+    className: "border-b border-l border-slate-200 px-3 py-2 text-right font-medium min-w-[110px]"
+  }, h)))), /*#__PURE__*/React.createElement("tbody", null, data.map((r, ridx) => /*#__PURE__*/React.createElement("tr", {
     key: r.id,
     className: "hover:bg-slate-50/60"
   }, /*#__PURE__*/React.createElement("td", {
@@ -6858,7 +6938,11 @@ function RekapAkumulasiTable({
   }, r.bulan), REKAP_AKUMULASI_COLS.map(c => /*#__PURE__*/React.createElement("td", {
     key: c.key,
     className: cellCls + " border-l" + (c.key === "akumRealisasi" ? " font-semibold text-slate-800" : "")
-  }, fmtNum(r[c.key], decimals))))))), /*#__PURE__*/React.createElement("p", {
+  }, fmtNum(r[c.key], decimals))), (() => {
+    const period = cat.periods[ridx];
+    const pair = akumCapaianPair(cat, null, period, capaianModes, capaianManualValues, r.akumTarget, r.akumRealisasi, r.akumForecast);
+    return [akumCapaianCell(pair.capaianRealisasi, "border-l"), akumCapaianCell(pair.capaianPrognosa)];
+  })())))), /*#__PURE__*/React.createElement("p", {
     className: "text-[11px] text-slate-400 px-4 py-2.5 bg-slate-50/60 border-t border-slate-100"
   }, "Nilai per bulan adalah total seluruh item pada tab Bulanan; kolom akumulasi dihitung otomatis Jan s.d. Des dan tidak dapat diedit."));
 }
@@ -7341,6 +7425,8 @@ function AnalisaPage({
     capaianManualValues: store.capaianManualValues,
     onCapaianManualChange: onCapaianManualChange
   }) : cat.id === "kimia" && pemSubTab === "akumulasi" ? /*#__PURE__*/React.createElement(KimiaAkumulasiTable, {
+    capaianModes: store.capaianModes,
+    capaianManualValues: store.capaianManualValues,
     cat: cat,
     year: year,
     rows: rows,
@@ -7350,11 +7436,15 @@ function AnalisaPage({
   }) : hasAkumulasiSubTab(curTabCfg) && pemSubTab === "akumulasi" ? REKAP_AKUMULASI_CATS.includes(cat.id) ? /*#__PURE__*/React.createElement(RekapAkumulasiTable, {
     cat: cat,
     year: year,
-    rows: rows
+    rows: rows,
+    capaianModes: store.capaianModes,
+    capaianManualValues: store.capaianManualValues
   }) : /*#__PURE__*/React.createElement(ItemGroupedAkumulasiTable, {
     cat: cat,
     rows: rows,
-    visiblePeriods: visiblePeriods
+    visiblePeriods: visiblePeriods,
+    capaianModes: store.capaianModes,
+    capaianManualValues: store.capaianManualValues
   }) : cat.id === "operasi" && showCapaian ? /*#__PURE__*/React.createElement(CapaianTable, {
     cat: cat,
     rows: rows,
