@@ -1020,19 +1020,54 @@ function nkoComputeItemResult(item, weight, store, year, monthIdx, useForecast) 
   const nilai = pct === null ? null : round4(pct / 100 * weight);
   return { pct, nilai, subResults, rencana: ownResolved.rencana, prognosa: ownResolved.realisasi };
 }
+// Bobot EFEKTIF: KPI yang %capaiannya N/A tidak ikut dihitung.
+//
+// KPI dianggap N/A bila:
+//  - KPI tunggal (tanpa sub-KPI) yang pct-nya null, atau
+//  - KPI bersub-KPI yang SELURUH sub-KPI-nya bernilai N/A (dan KPI induk tak punya angka sendiri).
+// Bobot KPI seperti itu dinolkan, sehingga total bobot bisa kurang dari 100 dan Capaian NKO
+// (Total Nilai / bobot efektif) tetap adil — tidak terhukum oleh KPI yang datanya belum ada.
+function nkoItemIsNA(item) {
+  if (!item) return true;
+  if (item.formulaType === "deduction") return false; // pengurang tidak memakai bobot
+  if (item.pct !== null && item.pct !== undefined) return false;
+  const subs = item.subResults || [];
+  if (subs.length) return subs.every(sub => sub.pct === null || sub.pct === undefined);
+  return true;
+}
 function nkoComputeStructureResult(structure, store, year, monthIdx, useForecast) {
   const categories = (structure.categories || []).map(cat => {
+    const isDeductionCat = (cat.unit || "%") === "deduction";
     const items = (cat.items || []).map(item => {
       const res = nkoComputeItemResult(item, item.weight || 0, store, year, monthIdx, useForecast);
-      return { ...item, ...res };
+      const merged = { ...item, ...res };
+      merged.isNA = nkoItemIsNA(merged);
+      // Bobot efektif KPI: 0 bila capaiannya N/A.
+      merged.effectiveWeight = merged.isNA || isDeductionCat || merged.formulaType === "deduction" ? 0 : merged.weight || 0;
+      return merged;
     });
     const catNilai = items.reduce((s, it) => s + (it.nilai || 0), 0);
     const catWeightSum = items.reduce((s, it) => s + (it.weight || 0), 0);
-    return { ...cat, items, nilai: round4(catNilai), itemsWeightSum: round4(catWeightSum) };
+    const catEffectiveWeight = items.reduce((s, it) => s + (it.effectiveWeight || 0), 0);
+    return { ...cat, items, nilai: round4(catNilai), itemsWeightSum: round4(catWeightSum), effectiveWeight: round4(catEffectiveWeight) };
   });
-  const totalWeight = categories.filter(c => (c.unit || "%") !== "deduction").reduce((s, c) => s + (c.weight || 0), 0);
+  const nonDeduction = categories.filter(c => (c.unit || "%") !== "deduction");
+  const totalWeightNominal = nonDeduction.reduce((s, c) => s + (c.weight || 0), 0);
+  // Bila kategori belum punya rincian item berbobot, pakai bobot kategori apa adanya supaya
+  // struktur sederhana (bobot hanya di level kategori) tidak ikut ternolkan.
+  const totalWeight = nonDeduction.reduce((s, c) => {
+    const hasItemWeights = (c.items || []).some(it => (it.weight || 0) > 0);
+    return s + (hasItemWeights ? c.effectiveWeight || 0 : c.weight || 0);
+  }, 0);
   const totalNilai = categories.reduce((s, c) => s + (c.nilai || 0), 0);
-  return { categories, totalWeight: round4(totalWeight), totalNilai: round4(totalNilai) };
+  const capaianNko = totalWeight ? round4(totalNilai / totalWeight * 100) : null;
+  return {
+    categories,
+    totalWeight: round4(totalWeight),
+    totalWeightNominal: round4(totalWeightNominal),
+    totalNilai: round4(totalNilai),
+    capaianNko
+  };
 }
 function nkoHasAnyRealisasiForMonth(structure, store, year, monthIdx) {
   // NKO dianggap "terealisasi" pada suatu bulan bila MINIMAL SATU KPI yang mengambil data dari
@@ -8156,7 +8191,7 @@ function NkoHasilTab({ structure, year, monthIdx, unitName, store, mode }) {
         });
       });
     });
-    rows.push(["", "JUMLAH NKO", "", "", fmtNum(result.totalWeight, 2), "", "", "", fmtNum(result.totalNilai, 2)]);
+    rows.push(["", "JUMLAH NKO", "", "", fmtNum(result.totalWeight, 2), "", "", result.capaianNko === null ? "-" : fmtNum(result.capaianNko, 2), fmtNum(result.totalNilai, 2)]);
     const ws = XLSX.utils.aoa_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "NKO");
@@ -8193,7 +8228,7 @@ function NkoHasilTab({ structure, year, monthIdx, unitName, store, mode }) {
         });
       });
     });
-    body.push([{ content: "NKO", colSpan: 4, styles: { fontStyle: "bold" } }, { content: fmtNum(result.totalWeight, 2), styles: { fontStyle: "bold" } }, "", "", "", { content: fmtNum(result.totalNilai, 2), styles: { fontStyle: "bold" } }]);
+    body.push([{ content: "NKO", colSpan: 4, styles: { fontStyle: "bold" } }, { content: fmtNum(result.totalWeight, 2), styles: { fontStyle: "bold" } }, "", "", { content: result.capaianNko === null ? "-" : fmtNum(result.capaianNko, 2), styles: { fontStyle: "bold" } }, { content: fmtNum(result.totalNilai, 2), styles: { fontStyle: "bold" } }]);
 
     // Lebar kolom disesuaikan agar muat pada A4 Potrait, lalu tabel diposisikan di tengah halaman
     const colWidths = [22, 145, 42, 34, 34, 50, 50, 45, 42];
@@ -8227,7 +8262,16 @@ function NkoHasilTab({ structure, year, monthIdx, unitName, store, mode }) {
     E("div", { className: "flex items-center justify-between flex-wrap gap-3" },
       E("div", { className: "flex items-center gap-3" },
         E("div", { className: "text-2xl font-bold text-emerald-700" }, fmtNum(result.totalNilai, 2)),
-        E("div", { className: "text-sm text-slate-400" }, `Total Nilai NKO ${monthLabel ? `— ${monthLabel} ${year}` : `(bobot ${fmtNum(result.totalWeight, 2)}%)`}`)
+        E("div", null,
+          E("div", { className: "text-sm text-slate-400" }, `Total Nilai NKO ${monthLabel ? `— ${monthLabel} ${year}` : ""}`),
+          E("div", { className: "text-xs text-slate-400 mt-0.5" },
+            "Capaian NKO ",
+            E("span", { className: "font-bold text-slate-700" }, result.capaianNko === null ? "-" : `${fmtNum(result.capaianNko, 2)}%`),
+            ` (${fmtNum(result.totalNilai, 2)} \u00f7 bobot efektif ${fmtNum(result.totalWeight, 2)})`,
+            result.totalWeightNominal !== undefined && Math.abs(result.totalWeightNominal - result.totalWeight) > 0.005
+              ? E("span", { className: "text-amber-600", title: "Bobot KPI yang %capaiannya N/A dikeluarkan dari perhitungan" }, ` \u2014 dari bobot nominal ${fmtNum(result.totalWeightNominal, 2)}`)
+              : null)
+        )
       ),
       E("div", { className: "flex items-center gap-2" },
         E("button", {
@@ -8290,9 +8334,9 @@ function NkoHasilTab({ structure, year, monthIdx, unitName, store, mode }) {
           }),
           E("tr", { className: "border-t-2 border-slate-200 font-bold text-slate-800 bg-emerald-50/50" },
             E("td", { className: "px-3 py-2.5", colSpan: 4 }, "NKO"),
-            E("td", { className: "px-3 py-2.5 text-right" }, fmtNum(result.totalWeight, 2)),
+            E("td", { className: "px-3 py-2.5 text-right", title: "Bobot efektif \u2014 KPI dengan %capaian N/A tidak dihitung" }, fmtNum(result.totalWeight, 2)),
             E("td", { className: "px-3 py-2.5", colSpan: 2 }, ""),
-            E("td", { className: "px-3 py-2.5 text-right" }, ""),
+            E("td", { className: "px-3 py-2.5 text-right" }, result.capaianNko === null ? "-" : `${fmtNum(result.capaianNko, 2)}%`),
             E("td", { className: "px-3 py-2.5 text-right text-emerald-700 text-base" }, fmtNum(result.totalNilai, 2))
           )
         )
@@ -8476,7 +8520,7 @@ const PAPARAN_H = 540;
 const PAPARAN_COLORS = { target: "#94a3b8", realisasi: "#008C4F", prognosa: "#f59e0b" };
 
 // --- Grafik garis sederhana (SVG murni, tanpa interaksi) --------------------
-function PaparanLineChart({ series, x, y, w, h, decimals, title, unit, compact }) {
+function PaparanLineChart({ series, x, y, w, h, decimals, title, unit, compact, markIdx, stats }) {
   const E = React.createElement;
   const vals = [];
   series.forEach(s => (s.data || []).forEach(v => {
@@ -8523,6 +8567,30 @@ function PaparanLineChart({ series, x, y, w, h, decimals, title, unit, compact }
       els.push(E("circle", { key: "c" + si + "-" + i, cx: xAt(i), cy: yAt(v), r: compact ? 2 : 2.8, fill: "#ffffff", stroke: s.color, strokeWidth: 1.6 }));
     });
   });
+  // Penanda bulan terpilih + kotak nilai (Target / Realisasi / Prognosa Akhir Periode).
+  if (hasData && markIdx !== null && markIdx !== undefined && markIdx >= 0 && markIdx < n) {
+    els.push(E("line", {
+      key: "mk", x1: xAt(markIdx), y1: y + padT, x2: xAt(markIdx), y2: y + padT + innerH,
+      stroke: "#0F2A3F", strokeWidth: 1.2, strokeDasharray: "3 3", opacity: 0.45
+    }));
+    series.forEach((sr, si) => {
+      const v = (sr.data || [])[markIdx];
+      if (v === null || v === undefined) return;
+      els.push(E("circle", { key: "mkc" + si, cx: xAt(markIdx), cy: yAt(v), r: compact ? 3.2 : 4.2, fill: sr.color, stroke: "#ffffff", strokeWidth: 1.4 }));
+    });
+  }
+  if (stats && stats.length) {
+    const bw = compact ? 96 : 138;
+    const lh = compact ? 11 : 14;
+    const bh = stats.length * lh + (compact ? 8 : 10);
+    const bx = x + w - padR - bw;
+    const by = y + padT + 2;
+    els.push(E("rect", { key: "sb", x: bx, y: by, width: bw, height: bh, rx: 4, fill: "#ffffff", stroke: "#e2e8f0", strokeWidth: 1, opacity: 0.95 }));
+    stats.forEach((st, i) => {
+      els.push(E("text", { key: "sl" + i, x: bx + 6, y: by + (compact ? 11 : 14) + i * lh, fontSize: compact ? 7.5 : 9.5, fill: "#64748b" }, st.label));
+      els.push(E("text", { key: "sv" + i, x: bx + bw - 6, y: by + (compact ? 11 : 14) + i * lh, textAnchor: "end", fontSize: compact ? 8 : 10, fontWeight: "700", fill: st.color || "#0f172a" }, st.value));
+    });
+  }
   if (!hasData) els.push(E("text", { key: "nd", x: x + w / 2, y: y + h / 2, textAnchor: "middle", fontSize: 11, fill: "#cbd5e1" }, "Belum ada data"));
   // legenda
   let lx = x + padL;
@@ -8537,6 +8605,31 @@ function PaparanLineChart({ series, x, y, w, h, decimals, title, unit, compact }
 }
 
 // --- Penyusun data tiap slide ----------------------------------------------
+// Nilai ringkas pada grafik: Target & Realisasi bulan terpilih, plus Prognosa Akhir Periode
+// (nilai prognosa pada bulan terakhir semester berjalan — sama seperti kartu Beranda).
+function paparanStats(series, idx, decimals, unit) {
+  const at = (label, fallbackLast) => {
+    const sr = series.find(x => x.label === label);
+    if (!sr) return null;
+    const arr = sr.data || [];
+    if (fallbackLast) {
+      const half = Math.round(arr.length / 2);
+      const semEnd = idx < half ? half : arr.length;
+      for (let k = semEnd - 1; k >= 0; k--) {
+        if (arr[k] !== null && arr[k] !== undefined) return arr[k];
+      }
+      return null;
+    }
+    const v = arr[idx];
+    return v === null || v === undefined ? null : v;
+  };
+  const fmt = v => v === null || v === undefined ? "-" : `${fmtNum(roundByDecimals(v, decimals), decimals)}${unit ? " " + unit : ""}`;
+  return [
+    { label: "Target", value: fmt(at("Target", false)), color: PAPARAN_COLORS.target },
+    { label: "Realisasi", value: fmt(at("Realisasi", false)), color: PAPARAN_COLORS.realisasi },
+    { label: "Prognosa Akhir Per.", value: fmt(at("Prognosa", true)), color: PAPARAN_COLORS.prognosa }
+  ];
+}
 function buildPaparanSlides(store, nkoState, year, monthIdx) {
   const monthFull = monthIdx === null || monthIdx === undefined ? null : MONTHS_FULL[monthIdx];
   const cutIdx = monthIdx === null || monthIdx === undefined ? MONTHS.length - 1 : monthIdx;
@@ -8552,6 +8645,7 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
   try { nkoRows = nkoComputeMonthlyRows(nkoState, store, year); } catch (e) {}
   slides.push({
     id: "nko", title: "Trend Nilai Kinerja Organisasi (NKO)", kind: "chart",
+    markIdx: cutIdx,
     charts: [{
       decimals: 2,
       series: [
@@ -8567,7 +8661,7 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
   const opRows = rowsOf("operasi");
   slides.push({
     id: "operasi", title: "Trend Kinerja Operasi",
-    kind: "chart-grid",
+    kind: "chart-grid", markIdx: cutIdx,
     charts: (opCat ? opCat.groups : []).map(g => ({
       title: g.label, decimals: opCat.decimals, unit: opCat.unit || "%",
       series: [
@@ -8582,7 +8676,7 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
   const biayaIds = ["pemeliharaan", "administrasi", "investasi", "kimia"];
   slides.push({
     id: "biaya", title: "Trend Akumulasi Biaya",
-    kind: "chart-grid",
+    kind: "chart-grid", markIdx: cutIdx,
     charts: biayaIds.map(id => {
       const cat = catById(id);
       if (!cat) return null;
@@ -8626,7 +8720,35 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
     }).filter(Boolean)
   });
 
-  // 5. Rekap Kinerja Bisnis Proses (per triwulan, %capaian)
+  // 5 & 6. Fisik Pemeliharaan dan PRK Investasi Terkontrak:
+  // daftar program (dari tab Program Anggaran) + grafik akumulasi target/realisasi/prognosa.
+  [["fisik", "Fisik Pemeliharaan"], ["prk", "PRK Investasi Terkontrak"]].forEach(([id, judul]) => {
+    const cat = catById(id);
+    if (!cat) return;
+    const rekap = rowsOf(id);
+    const cfg = PROGRAM_AO_SCHEME[id];
+    const programRows = cfg ? programAORowsForYear(store[cfg.programKey], year) : [];
+    let lastReal = -1;
+    rekap.forEach((r, i) => {
+      if (r.realisasi !== null && r.realisasi !== undefined && r.realisasi !== 0) lastReal = i;
+    });
+    const realCut = Math.min(lastReal, cutIdx);
+    slides.push({
+      id: id, title: judul, kind: "table-chart", markIdx: cutIdx,
+      columns: [cfg && id === "prk" ? "Item Program AI" : "Item Program AO", "Bulan Target", "Bulan Realisasi", "Bulan Prognosa"],
+      rows: programRows.map(r => [r.item || "-", r.bulanTarget || "-", r.bulanRealisasi || "-", r.bulanPrognosa || "-"]),
+      charts: [{
+        title: "Akumulasi program", decimals: 0, unit: "program",
+        series: [
+          { label: "Target", color: PAPARAN_COLORS.target, dash: "5 4", data: rekap.map(r => r.akumTarget), labels: MONTHS },
+          { label: "Realisasi", color: PAPARAN_COLORS.realisasi, data: rekap.map((r, i) => i <= realCut ? r.akumRealisasi : null), labels: MONTHS },
+          { label: "Prognosa", color: PAPARAN_COLORS.prognosa, dash: "3 3", data: rekap.map(r => r.akumForecast), labels: MONTHS }
+        ]
+      }]
+    });
+  });
+
+  // 7. Rekap Kinerja Bisnis Proses (per triwulan, %capaian)
   const bisnisCat = catById("bisnis");
   const bisnisRows = rowsOf("bisnis");
   let bisnisCap = [];
@@ -8639,7 +8761,7 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
       ...QUARTERS.map(q => r[q + "CapaianPrognosa"] === null || r[q + "CapaianPrognosa"] === undefined ? "-" : `${fmtNum(r[q + "CapaianPrognosa"], 1)}%`)])
   });
 
-  // 6. Rekap Kinerja Unit Lainnya (bulan terpilih)
+  // 8. Rekap Kinerja Unit Lainnya (bulan terpilih)
   const lainnyaCat = catById("lainnya");
   const lainnyaRows = rowsOf("lainnya");
   let lainnyaCap = [];
@@ -8685,7 +8807,23 @@ function paparanSlideSvgChildren(slide, note) {
   const bodyTop = 82;
   const bodyH = PAPARAN_H - bodyTop - 30 - noteH;
   if (slide.kind === "chart") {
-    els.push(E(PaparanLineChart, { key: "c0", x: 40, y: bodyTop, w: PAPARAN_W - 80, h: bodyH, decimals: slide.charts[0].decimals, series: slide.charts[0].series, unit: slide.charts[0].unit }));
+    const c = slide.charts[0];
+    els.push(E(PaparanLineChart, {
+      key: "c0", x: 40, y: bodyTop, w: PAPARAN_W - 80, h: bodyH,
+      decimals: c.decimals, series: c.series, unit: c.unit,
+      markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit)
+    }));
+  } else if (slide.kind === "table-chart") {
+    // Separuh atas: tabel daftar program. Separuh bawah: grafik akumulasi.
+    const chartH = Math.max(150, bodyH * 0.42);
+    const tableH = bodyH - chartH - 12;
+    els.push.apply(els, paparanTableEls(slide, 40, bodyTop, PAPARAN_W - 80, tableH));
+    const c = slide.charts && slide.charts[0];
+    if (c) els.push(E(PaparanLineChart, {
+      key: "tc", x: 40, y: bodyTop + tableH + 12, w: PAPARAN_W - 80, h: chartH,
+      decimals: c.decimals, series: c.series, unit: c.unit, compact: true,
+      markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit)
+    }));
   } else if (slide.kind === "chart-grid") {
     const list = slide.charts || [];
     const cols = list.length <= 2 ? list.length || 1 : 2;
@@ -8697,30 +8835,12 @@ function paparanSlideSvgChildren(slide, note) {
       const r = Math.floor(i / cols), cIdx = i % cols;
       els.push(E(PaparanLineChart, {
         key: "c" + i, x: 40 + cIdx * (cw + gapX), y: bodyTop + r * (ch + gapY),
-        w: cw, h: ch, decimals: c.decimals, series: c.series, title: c.title, unit: c.unit, compact: true
+        w: cw, h: ch, decimals: c.decimals, series: c.series, title: c.title, unit: c.unit, compact: true,
+        markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit)
       }));
     });
   } else if (slide.kind === "table") {
-    const cols = slide.columns || [];
-    const rows = slide.rows || [];
-    const colW = (PAPARAN_W - 80) / cols.length;
-    const firstW = colW * 1.6;
-    const otherW = (PAPARAN_W - 80 - firstW) / Math.max(1, cols.length - 1);
-    const xOf = i => 40 + (i === 0 ? 0 : firstW + (i - 1) * otherW);
-    const rowH = Math.min(30, Math.max(18, (bodyH - 34) / Math.max(1, rows.length)));
-    els.push(E("rect", { key: "th", x: 40, y: bodyTop, width: PAPARAN_W - 80, height: 28, fill: "#f1f5f9" }));
-    cols.forEach((c, i) => els.push(E("text", {
-      key: "hc" + i, x: xOf(i) + 8, y: bodyTop + 18, fontSize: 10, fontWeight: "700", fill: "#475569"
-    }, c)));
-    rows.slice(0, 12).forEach((r, ri) => {
-      const ry = bodyTop + 28 + ri * rowH;
-      if (ri % 2 === 1) els.push(E("rect", { key: "rb" + ri, x: 40, y: ry, width: PAPARAN_W - 80, height: rowH, fill: "#f8fafc" }));
-      r.forEach((cell, ci) => els.push(E("text", {
-        key: "rc" + ri + "-" + ci, x: xOf(ci) + 8, y: ry + rowH / 2 + 4,
-        fontSize: 10.5, fill: ci === 0 ? "#0f172a" : "#334155", fontWeight: ci === 0 ? "600" : "400"
-      }, ci === 0 ? paparanTrunc(String(cell), 38) : String(cell))));
-    });
-    if (!rows.length) els.push(E("text", { key: "nd", x: PAPARAN_W / 2, y: bodyTop + 70, textAnchor: "middle", fontSize: 12, fill: "#cbd5e1" }, "Belum ada data"));
+    els.push.apply(els, paparanTableEls(slide, 40, bodyTop, PAPARAN_W - 80, bodyH));
   }
   if (noteLines.length) {
     const ny = PAPARAN_H - 30 - noteH + 6;
@@ -8728,6 +8848,58 @@ function paparanSlideSvgChildren(slide, note) {
     noteLines.slice(0, 4).forEach((ln, i) => els.push(E("text", { key: "nl" + i, x: 52, y: ny + 14 + i * 18, fontSize: 12, fill: "#334155" }, ln)));
   }
   els.push(E("text", { key: "ft", x: PAPARAN_W - 40, y: PAPARAN_H - 12, textAnchor: "end", fontSize: 9, fill: "#94a3b8" }, "PerformU — PT PLN NP UP Brantas"));
+  return els;
+}
+// Tabel slide. Kolom pertama (Uraian) dibungkus ke beberapa baris agar teks panjang tidak
+// menabrak kolom sebelahnya; tinggi baris menyesuaikan jumlah baris terpanjang.
+function paparanTableEls(slide, x, y, w, h) {
+  const E = React.createElement;
+  const els = [];
+  const cols = slide.columns || [];
+  const rows = slide.rows || [];
+  if (!cols.length) return els;
+  const firstW = Math.min(w * 0.42, Math.max(w * 0.24, w / cols.length * 1.9));
+  const otherW = (w - firstW) / Math.max(1, cols.length - 1);
+  const xOf = i => x + (i === 0 ? 0 : firstW + (i - 1) * otherW);
+  const wOf = i => i === 0 ? firstW : otherW;
+  const fs = 10;
+  const charW = fs * 0.52;
+  const maxCharsFirst = Math.max(8, Math.floor((firstW - 16) / charW));
+  const headH = 28;
+  const avail = h - headH;
+  const wrapped = rows.map(r => paparanWrap(String(r[0] === null || r[0] === undefined ? "-" : r[0]), maxCharsFirst));
+  const maxLines = Math.max(1, ...wrapped.map(l => l.length));
+  const lineH = 13;
+  const naturalRowH = Math.max(20, maxLines * lineH + 8);
+  const maxRows = Math.max(1, Math.floor(avail / naturalRowH));
+  const shown = rows.slice(0, maxRows);
+  const rowH = Math.min(naturalRowH, avail / Math.max(1, shown.length));
+  els.push(E("rect", { key: "th", x: x, y: y, width: w, height: headH, fill: "#f1f5f9" }));
+  cols.forEach((c, i) => els.push(E("text", {
+    key: "hc" + i, x: xOf(i) + 8, y: y + 18, fontSize: fs, fontWeight: "700", fill: "#475569"
+  }, paparanTrunc(String(c), Math.max(6, Math.floor((wOf(i) - 12) / charW))))));
+  shown.forEach((r, ri) => {
+    const ry = y + headH + ri * rowH;
+    if (ri % 2 === 1) els.push(E("rect", { key: "rb" + ri, x: x, y: ry, width: w, height: rowH, fill: "#f8fafc" }));
+    const lines = wrapped[ri].slice(0, Math.max(1, Math.floor((rowH - 4) / lineH)));
+    const blockH = lines.length * lineH;
+    const startY = ry + (rowH - blockH) / 2 + lineH - 3;
+    lines.forEach((ln, li) => els.push(E("text", {
+      key: "rc" + ri + "-0-" + li, x: xOf(0) + 8, y: startY + li * lineH,
+      fontSize: fs, fill: "#0f172a", fontWeight: "600"
+    }, ln)));
+    r.slice(1).forEach((cell, k) => {
+      const ci = k + 1;
+      els.push(E("text", {
+        key: "rc" + ri + "-" + ci, x: xOf(ci) + 8, y: ry + rowH / 2 + 4,
+        fontSize: fs, fill: "#334155"
+      }, paparanTrunc(String(cell === null || cell === undefined ? "-" : cell), Math.max(4, Math.floor((otherW - 12) / charW)))));
+    });
+  });
+  if (!rows.length) els.push(E("text", { key: "nd", x: x + w / 2, y: y + 70, textAnchor: "middle", fontSize: 12, fill: "#cbd5e1" }, "Belum ada data"));
+  else if (rows.length > shown.length) els.push(E("text", {
+    key: "more", x: x + w - 4, y: y + headH + shown.length * rowH + 12, textAnchor: "end", fontSize: 9, fill: "#94a3b8"
+  }, `+${rows.length - shown.length} baris lainnya`));
   return els;
 }
 function paparanWrap(text, maxChars) {
