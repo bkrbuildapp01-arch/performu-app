@@ -108,6 +108,7 @@ const ICON_PATHS = {
   edit: "M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z",
   check: "M20 6 9 17l-5-5",
   sparkles: "M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8",
+  "message-circle": "M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z",
   loader: "M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8",
   lock: "M6 10V7a6 6 0 1 1 12 0v3M5 10h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z"
 };
@@ -1060,15 +1061,52 @@ function nkoHasAnyRealisasiForMonth(structure, store, year, monthIdx) {
   if (linkedTotal > 0) return linkedFilled > 0;
   return anyFilled;
 }
+// Bulan terakhir yang boleh menampilkan realisasi NKO.
+//
+// Setiap KPI yang mengambil data dari Data Input punya bulan terakhir realisasinya sendiri.
+// NKO baru "utuh" sampai bulan di mana SELURUH sumber aktif sudah terisi — jadi batasnya adalah
+// yang PALING AWAL berhenti (mis. EAF berhenti di Juni walau biaya terisi s.d. Desember).
+// KPI yang sepanjang tahun tidak punya realisasi sama sekali diabaikan (belum dipakai),
+// supaya satu KPI kosong tidak membuat NKO ikut kosong sepanjang tahun.
+function nkoLastRealisasiMonthIdx(yearStructure, store, year) {
+  const nodes = [];
+  const collect = structure => {
+    (structure && structure.categories || []).forEach(cat => {
+      (cat.items || []).forEach(item => {
+        const subs = item.subItems || [];
+        if (subs.length) subs.forEach(sn => nodes.push(sn));else nodes.push(item);
+      });
+    });
+  };
+  // Struktur bisa berbeda per bulan; kumpulkan node dari seluruh varian bulan.
+  collect(nkoStructureForMonth(yearStructure, null));
+  MONTHS.forEach((m, i) => {
+    if (yearStructure && yearStructure.byMonth && yearStructure.byMonth[i]) collect(yearStructure.byMonth[i]);
+  });
+  const linked = nodes.filter(n => n && n.sourceType === "linked");
+  if (!linked.length) return MONTHS.length - 1;
+  let cutoff = null;
+  linked.forEach(node => {
+    let last = -1;
+    for (let i = 0; i < MONTHS.length; i++) {
+      const resolved = nkoResolveNode(node, store, year, i, false);
+      if (resolved && resolved.realisasi !== null && resolved.realisasi !== undefined) last = i;
+    }
+    if (last < 0) return; // sumber ini belum dipakai sama sekali -> abaikan
+    cutoff = cutoff === null ? last : Math.min(cutoff, last);
+  });
+  return cutoff === null ? -1 : cutoff;
+}
 function nkoComputeMonthlyRows(nkoState, store, year) {
   // Bangun 12 baris bulanan untuk tab "NKO" di menu Analisa: Target = total bobot,
   // Realisasi = total Nilai NKO bulan tsb, Prognosa = total Nilai NKO memakai data forecast bila realisasi kosong.
   const yearStructure = nkoState.byYear[year];
+  const realisasiCutoff = nkoLastRealisasiMonthIdx(yearStructure, store, year);
   return MONTHS.map((m, idx) => {
     // Setiap bulan memakai strukturnya sendiri bila ada penyesuaian per bulan.
     const structure = nkoStructureForMonth(yearStructure, idx);
     if (!structure) return { id: `${year}-${idx}`, bulan: `${m} ${year}`, nkoPrognosa: null, nkoRealisasi: null, nkoForecast: null };
-    const hasRealisasi = nkoHasAnyRealisasiForMonth(structure, store, year, idx);
+    const hasRealisasi = idx <= realisasiCutoff && nkoHasAnyRealisasiForMonth(structure, store, year, idx);
     const realResult = nkoComputeStructureResult(structure, store, year, idx, false);
     const forecastResult = nkoComputeStructureResult(structure, store, year, idx, true);
     return {
@@ -2167,9 +2205,10 @@ function CapaianBadge({
   // Nilai ini adalah %CAPAIAN (100% = tepat target), jadi ambang warnanya 100 — bukan 0.
   // Sebelumnya `capaianPct >= 0` membuat capaian 66% pun tampil hijau.
   const up = capaianPct >= 100;
-  const colorClass = isProg
-    ? "bg-slate-100 text-slate-400 opacity-70"
-    : (up ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600");
+  // Saat menampilkan data Prognosa, badge tetap BERWARNA (hijau/merah sesuai capaian) namun
+  // ditampilkan transparan 30% agar mudah dibedakan dari data Realisasi.
+  const baseColor = up ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600";
+  const colorClass = isProg ? `${baseColor} opacity-30` : baseColor;
   return /*#__PURE__*/React.createElement("span", {
     className: `inline-flex items-center font-semibold rounded-full px-1.5 py-0.5 leading-none align-middle ${colorClass}`,
     style: {
@@ -5645,11 +5684,20 @@ function BerandaPage({
   // membaca kolom tersebut — tidak perlu diakumulasikan ulang.
   const mainSeries = useMemo(() => {
     if (PROGRAM_AKUM_CATS.includes(mainMetric.id)) {
-      if (pemMode !== "akumulasi") return mainSeriesBase;
-      return mainRows.map(r => ({
+      // Garis realisasi berhenti di bulan terakhir yang benar-benar ada realisasinya. Bulan-bulan
+      // sesudahnya (nilai kosong / 0 karena belum ada program terealisasi) tidak digambar, supaya
+      // garis tidak terlihat "mendatar" seolah data sudah masuk.
+      let lastReal = -1;
+      mainRows.forEach((r, i) => {
+        if (r.realisasi !== null && r.realisasi !== undefined && r.realisasi !== 0) lastReal = i;
+      });
+      if (pemMode !== "akumulasi") {
+        return mainSeriesBase.map((d, i) => i <= lastReal ? d : { ...d, Realisasi: null });
+      }
+      return mainRows.map((r, i) => ({
         bulan: String(r.bulan).split(" ")[0],
         Prognosa: r.akumTarget === undefined ? null : r.akumTarget,
-        Realisasi: r.realisasi === null || r.realisasi === undefined ? null : r.akumRealisasi,
+        Realisasi: i > lastReal || r.realisasi === null || r.realisasi === undefined ? null : r.akumRealisasi,
         Forecast: r.akumForecast === undefined ? null : r.akumForecast
       }));
     }
@@ -5869,7 +5917,11 @@ function BerandaPage({
       if (setActiveCatId) setActiveCatId("bisnis");
       if (setActiveMenu) setActiveMenu("data-input");
     }
-  }))), analisaKpi && /*#__PURE__*/React.createElement(KpiDetailModal, {
+  }))), /*#__PURE__*/React.createElement(BerandaChatWidget, {
+    store: store,
+    nkoState: nkoState,
+    selectedYears: selectedYears
+  }), analisaKpi && /*#__PURE__*/React.createElement(KpiDetailModal, {
     kpi: analisaKpi,
     note: analisaNoteText,
     rootCauseNote: analisaRootCauseText,
@@ -6027,6 +6079,9 @@ function computeForecastRows(cat, rows, priorYearRows) {
   if (cat.type === "itemGrouped") return computeForecastRowsItemGrouped(cat, rows, priorYearRows);
   return rows;
 }
+// Nilai akumulasi bersifat kumulatif: bulan tanpa data BUKAN berarti nol, melainkan tetap
+// sama dengan akumulasi bulan sebelumnya. Hanya bulan-bulan sebelum data pertama muncul yang
+// dibiarkan kosong (belum ada apa pun untuk diakumulasi).
 function accumulateChartSeries(series, decimals) {
   let cp = null,
     cr = null,
@@ -6037,9 +6092,9 @@ function accumulateChartSeries(series, decimals) {
     if (d.Forecast !== null && d.Forecast !== undefined) cf = (cf || 0) + d.Forecast;
     return {
       bulan: d.bulan,
-      Prognosa: d.Prognosa !== null && d.Prognosa !== undefined ? roundByDecimals(cp, decimals) : null,
-      Realisasi: d.Realisasi !== null && d.Realisasi !== undefined ? roundByDecimals(cr, decimals) : null,
-      Forecast: d.Forecast !== null && d.Forecast !== undefined ? roundByDecimals(cf, decimals) : null
+      Prognosa: cp === null ? null : roundByDecimals(cp, decimals),
+      Realisasi: cr === null ? null : roundByDecimals(cr, decimals),
+      Forecast: cf === null ? null : roundByDecimals(cf, decimals)
     };
   });
 }
@@ -9106,6 +9161,207 @@ async function callGeminiAnalysis(apiKey, model, prompt) {
     }
     throw e;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Chat Asisten Data (tombol mengambang di Beranda)
+// ---------------------------------------------------------------------------
+// Merangkum data 12 bulan seluruh KPI pada tahun terpilih menjadi konteks teks ringkas,
+// lalu dikirim bersama pertanyaan pengguna ke model AI yang sudah dikonfigurasi.
+function buildChatDataContext(store, nkoState, selectedYears) {
+  const lines = [];
+  const year = selectedYears && selectedYears.nko ? selectedYears.nko : BASE_YEARS[BASE_YEARS.length - 1];
+  lines.push(`Data kinerja PT PLN NP Unit Pembangkitan Brantas tahun ${year}.`);
+  lines.push(`Istilah: Target = rencana, Realisasi = aktual, Prognosa = proyeksi. Capaian = realisasi terhadap target.`);
+  const fmtSeries = (label, arr, decimals, unit) => {
+    const parts = MONTHS.map((m, i) => {
+      const v = arr[i];
+      return `${m}=${v === null || v === undefined ? "-" : fmtNum(v, decimals)}`;
+    });
+    lines.push(`${label}${unit ? " (" + unit + ")" : ""}: ${parts.join(", ")}`);
+  };
+  // NKO
+  try {
+    const nkoRows = nkoComputeMonthlyRows(nkoState, store, year);
+    lines.push("");
+    lines.push("== Nilai Kinerja Organisasi (NKO) ==");
+    fmtSeries("NKO Target", nkoRows.map(r => r.nkoPrognosa), 2, "");
+    fmtSeries("NKO Realisasi", nkoRows.map(r => r.nkoRealisasi), 2, "");
+    fmtSeries("NKO Prognosa", nkoRows.map(r => r.nkoForecast), 2, "");
+  } catch (e) {}
+  CATEGORIES.filter(c => c.id !== "nko").forEach(cat => {
+    const catStore = store[cat.id];
+    if (!catStore || !catStore.byYear) return;
+    const rows = catStore.byYear[selectedYears[cat.id] || year];
+    if (!rows || !rows.length) return;
+    lines.push("");
+    lines.push(`== ${cat.title} ==`);
+    if (cat.type === "monthlyGrouped") {
+      (cat.groups || []).forEach(g => {
+        fmtSeries(`${g.label} Target`, rows.map(r => r[g.key + "Prognosa"]), cat.decimals, cat.unit);
+        fmtSeries(`${g.label} Realisasi`, rows.map(r => r[g.key + "Realisasi"]), cat.decimals, cat.unit);
+        fmtSeries(`${g.label} Prognosa`, rows.map(r => r[g.key + "Forecast"]), cat.decimals, cat.unit);
+      });
+    } else if (cat.type === "monthlySimple") {
+      fmtSeries("Target bulanan", rows.map(r => r.target), cat.decimals, cat.unit);
+      fmtSeries("Realisasi bulanan", rows.map(r => r.realisasi), cat.decimals, cat.unit);
+      fmtSeries("Prognosa bulanan", rows.map(r => r.forecast), cat.decimals, cat.unit);
+      fmtSeries("Akumulasi Realisasi", rows.map(r => r.akumRealisasi), cat.decimals, cat.unit);
+    } else if (cat.periods && cat.periods.length) {
+      const akum = accumulateItemRows(cat, rows);
+      const sumAt = (src, p, suffix) => {
+        let sum = null;
+        src.forEach(r => {
+          const v = r[p + suffix];
+          if (v !== null && v !== undefined) sum = (sum || 0) + v;
+        });
+        return sum;
+      };
+      const periodLabels = cat.periods;
+      const line = (label, src, suffix) => {
+        const parts = periodLabels.map(p => {
+          const v = sumAt(src, p, suffix);
+          return `${p}=${v === null ? "-" : fmtNum(v, cat.decimals)}`;
+        });
+        lines.push(`${label}${cat.unit ? " (" + cat.unit + ")" : ""}: ${parts.join(", ")}`);
+      };
+      line("Total Target (akumulasi)", akum, "Prognosa");
+      line("Total Realisasi (akumulasi)", akum, "Realisasi");
+      line("Total Prognosa (akumulasi)", akum, "Forecast");
+      rows.slice(0, 8).forEach(r => {
+        const parts = periodLabels.map(p => {
+          const v = r[p + "Realisasi"];
+          return `${p}=${v === null || v === undefined ? "-" : fmtNum(v, cat.decimals)}`;
+        });
+        lines.push(`  Item "${r.label || "-"}" Realisasi: ${parts.join(", ")}`);
+      });
+    }
+  });
+  return lines.join("\n");
+}
+function buildChatPrompt(question, dataContext, history) {
+  const lines = [];
+  lines.push("Anda adalah asisten analis kinerja pembangkit listrik pada aplikasi PerformU (PT PLN NP Unit Pembangkitan Brantas).");
+  lines.push("Jawab pertanyaan pengguna HANYA berdasarkan data di bawah ini. Jika data tidak cukup untuk menjawab, katakan terus terang bagian mana yang belum tersedia — jangan mengarang angka.");
+  lines.push("Jawab dalam bahasa Indonesia yang ringkas (maksimal 6 kalimat), sebutkan angka pendukung, dan bila relevan sebutkan kemungkinan penyebab beserta satu saran tindak lanjut.");
+  lines.push("");
+  lines.push("=== DATA ===");
+  lines.push(dataContext);
+  lines.push("=== AKHIR DATA ===");
+  if (history && history.length) {
+    lines.push("");
+    lines.push("Percakapan sebelumnya:");
+    history.slice(-4).forEach(h => {
+      lines.push(`${h.role === "user" ? "Pengguna" : "Asisten"}: ${h.text}`);
+    });
+  }
+  lines.push("");
+  lines.push(`Pertanyaan: ${question}`);
+  return lines.join("\n");
+}
+function BerandaChatWidget({ store, nkoState, selectedYears }) {
+  const E = React.createElement;
+  const [open, setOpen] = useState(false);
+  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const listRef = useRef(null);
+  useEffect(() => {
+    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+  }, [messages, loading, open]);
+  const send = async questionText => {
+    const q = (questionText === undefined ? input : questionText).trim();
+    if (!q || loading) return;
+    setInput("");
+    setError("");
+    const nextMessages = [...messages, { role: "user", text: q }];
+    setMessages(nextMessages);
+    const live = loadAiSettings();
+    if (!live.enabled) {
+      setMessages([...nextMessages, { role: "assistant", text: "Asisten AI sedang dinonaktifkan. Aktifkan dulu di Pengaturan AI." }]);
+      return;
+    }
+    const apiKey = live.provider === "gemini" ? live.geminiApiKey : live.claudeApiKey;
+    if (!apiKey) {
+      setMessages([...nextMessages, { role: "assistant", text: `Kunci API ${live.provider === "gemini" ? "Gemini" : "Claude"} belum diisi. Silakan isi di Pengaturan AI terlebih dahulu.` }]);
+      return;
+    }
+    setLoading(true);
+    try {
+      const dataContext = buildChatDataContext(store, nkoState, selectedYears);
+      const prompt = buildChatPrompt(q, dataContext, messages);
+      const text = live.provider === "gemini"
+        ? await callGeminiAnalysis(apiKey, live.geminiModel, prompt)
+        : await callClaudeAnalysis(apiKey, live.claudeModel, prompt);
+      setMessages([...nextMessages, { role: "assistant", text }]);
+    } catch (e) {
+      setError(e && e.message ? e.message : "Gagal menghubungi layanan AI.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  const suggestions = [
+    "Apa yang menyebabkan NKO Prognosa di bulan Juli turun?",
+    "KPI mana yang capaiannya paling rendah bulan ini?",
+    "Bagaimana tren Biaya Pemeliharaan tahun ini?"
+  ];
+  const panel = open && E("div", {
+    className: "mb-3 w-[min(92vw,380px)] max-h-[70vh] bg-white rounded-2xl shadow-[0_8px_40px_-12px_rgba(15,23,42,0.45)] border border-slate-200 flex flex-col overflow-hidden"
+  },
+    E("div", { className: "flex items-center gap-2 px-4 py-3 bg-[#0F2A3F] text-white flex-shrink-0" },
+      E("span", { className: "w-7 h-7 rounded-lg bg-white/15 flex items-center justify-center" }, E(Icon, { name: "sparkles", size: 14 })),
+      E("div", { className: "min-w-0 flex-1" },
+        E("p", { className: "text-sm font-bold leading-tight" }, "Tanya Data"),
+        E("p", { className: "text-[10px] text-white/60 leading-tight" }, "Dijawab dari data Data Input & Form NKO")),
+      messages.length > 0 && E("button", {
+        type: "button", onClick: () => { setMessages([]); setError(""); },
+        title: "Bersihkan percakapan",
+        className: "text-[10px] font-semibold px-2 py-1 rounded-full bg-white/10 hover:bg-white/20 transition"
+      }, "Bersihkan"),
+      E("button", {
+        type: "button", onClick: () => setOpen(false), "aria-label": "Tutup",
+        className: "w-7 h-7 rounded-full hover:bg-white/15 flex items-center justify-center flex-shrink-0"
+      }, E(Icon, { name: "x", size: 14 }))),
+    E("div", { ref: listRef, className: "flex-1 overflow-y-auto px-4 py-3 space-y-2.5 min-h-[160px]" },
+      messages.length === 0 && !loading && E("div", { className: "space-y-2" },
+        E("p", { className: "text-xs text-slate-400 leading-relaxed" }, "Tanyakan apa saja tentang data kinerja tahun ini. Contoh:"),
+        suggestions.map((sug, i) => E("button", {
+          key: i, type: "button", onClick: () => send(sug),
+          className: "w-full text-left text-[11px] text-slate-600 bg-slate-50 hover:bg-slate-100 border border-slate-100 rounded-xl px-3 py-2 transition"
+        }, sug))),
+      messages.map((msg, i) => E("div", {
+        key: i,
+        className: `flex ${msg.role === "user" ? "justify-end" : "justify-start"}`
+      }, E("div", {
+        className: `max-w-[85%] text-xs leading-relaxed rounded-2xl px-3 py-2 whitespace-pre-wrap ${msg.role === "user" ? "bg-[#0F2A3F] text-white rounded-br-sm" : "bg-slate-100 text-slate-700 rounded-bl-sm"}`
+      }, msg.text))),
+      loading && E("div", { className: "flex justify-start" },
+        E("div", { className: "bg-slate-100 text-slate-400 text-xs rounded-2xl rounded-bl-sm px-3 py-2" }, "Menganalisa data...")),
+      error && E("p", { className: "text-[11px] text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-2.5 py-2" }, error)),
+    E("div", { className: "flex items-end gap-2 px-3 py-3 border-t border-slate-100 flex-shrink-0" },
+      E("textarea", {
+        value: input,
+        rows: 1,
+        placeholder: "Tulis pertanyaan...",
+        onChange: e => setInput(e.target.value),
+        onKeyDown: e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } },
+        className: "flex-1 resize-none text-xs bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 max-h-24 focus:outline-none focus:ring-1 focus:ring-emerald-300 focus:bg-white"
+      }),
+      E("button", {
+        type: "button", onClick: () => send(), disabled: loading || !input.trim(),
+        "aria-label": "Kirim",
+        className: "w-9 h-9 rounded-full bg-[#0F2A3F] text-white flex items-center justify-center flex-shrink-0 hover:bg-[#16374f] transition disabled:opacity-40 disabled:cursor-not-allowed"
+      }, E(Icon, { name: "chevron-right", size: 16 }))));
+  return E("div", { className: "fixed bottom-6 right-6 z-40 flex flex-col items-end" },
+    panel,
+    E("button", {
+      type: "button",
+      onClick: () => setOpen(v => !v),
+      title: open ? "Tutup chat" : "Tanya tentang data kinerja",
+      "aria-label": "Chat",
+      className: "w-14 h-14 rounded-full bg-[#0F2A3F] text-white shadow-[0_8px_24px_-6px_rgba(15,42,63,0.6)] flex items-center justify-center hover:bg-[#16374f] transition"
+    }, E(Icon, { name: open ? "x" : "message-circle", size: 22, strokeWidth: 2 })));
 }
 
 function buildAiPrompt(title, trend, unit, decimals, cat) {
