@@ -5061,7 +5061,7 @@ const REKAP_AKUMULASI_CATS = ["investasi"];
 // Label kolom bulan target pada tabel Program Anggaran, per kategori.
 const PROGRAM_TARGET_COL_LABELS = { fisik: "Bulan Target Fisik", prk: "Bulan Target Terkontrak" };
 // Kategori tanpa tombol "Hitung Prognosa" (prognosa diisi manual sesuai kontrak/realisasi).
-const NO_HITUNG_PROGNOSA_CATS = ["investasi", "bisnis"];
+const NO_HITUNG_PROGNOSA_CATS = ["investasi", "bisnis", "lainnya"];
 const CAPAIAN_ITEM_CATS = ["pemeliharaan", "administrasi", "investasi"];
 const CAPAIAN_PROGRAMAO_CATS = ["fisik", "prk"];
 const CAPAIAN_CATS = ["operasi", "kimia", "lainnya", "bisnis", ...CAPAIAN_ITEM_CATS, ...CAPAIAN_PROGRAMAO_CATS];
@@ -6238,9 +6238,13 @@ function accumulateItemRows(cat, rows) {
       if (pv !== null && pv !== undefined) cp = (cp || 0) + pv;
       if (rv !== null && rv !== undefined) cr = (cr || 0) + rv;
       if (fv !== null && fv !== undefined) cf = (cf || 0) + fv;
-      next[p + "Prognosa"] = pv !== null && pv !== undefined ? roundByDecimals(cp, cat.decimals) : null;
-      next[p + "Realisasi"] = rv !== null && rv !== undefined ? roundByDecimals(cr, cat.decimals) : null;
-      next[p + "Forecast"] = fv !== null && fv !== undefined ? roundByDecimals(cf, cat.decimals) : null;
+      // Nilai akumulasi bersifat kumulatif: bulan tanpa data BUKAN nol, melainkan tetap sama
+      // dengan akumulasi bulan sebelumnya. Hanya bulan sebelum data pertama yang dibiarkan kosong.
+      // (Sebelumnya bulan kosong menghasilkan null, sehingga kartu Beranda kehilangan nilai
+      // akumulasi bulan tsb dan jatuh ke perhitungan bulanan.)
+      next[p + "Prognosa"] = cp === null ? null : roundByDecimals(cp, cat.decimals);
+      next[p + "Realisasi"] = cr === null ? null : roundByDecimals(cr, cat.decimals);
+      next[p + "Forecast"] = cf === null ? null : roundByDecimals(cf, cat.decimals);
     });
     return next;
   });
@@ -9135,6 +9139,34 @@ function loadAiSettings() {
     return { enabled: true, provider: "claude", claudeApiKey: "", geminiApiKey: "", claudeModel: "claude-sonnet-4-5-20250929", geminiModel: "gemini-flash-latest" };
   }
 }
+// Setelan AI (provider + kunci API) dikelola Admin dan disimpan di server. Salinan localStorage
+// hanya cache per perangkat, sehingga login User bisa memegang provider/kunci basi. Helper ini
+// selalu mengambil versi server lebih dulu, baru jatuh ke cache lokal bila server tak terjangkau.
+async function resolveAiSettings() {
+  const local = loadAiSettings();
+  try {
+    const remote = await performuApiFetch("/settings/ai-settings");
+    if (remote && (remote.provider || remote.claudeApiKey || remote.geminiApiKey)) {
+      return { ...local, ...remote };
+    }
+  } catch (e) {}
+  return local;
+}
+// Menentukan provider yang benar-benar dapat dipakai: kalau kunci provider aktif kosong tetapi
+// provider satunya terisi, pakai yang terisi agar tidak gagal hanya karena default tidak cocok.
+function resolveAiProvider(settings) {
+  let provider = settings && settings.provider === "gemini" ? "gemini" : "claude";
+  let apiKey = provider === "gemini" ? settings.geminiApiKey : settings.claudeApiKey;
+  if (!apiKey) {
+    const alt = provider === "gemini" ? "claude" : "gemini";
+    const altKey = alt === "gemini" ? settings.geminiApiKey : settings.claudeApiKey;
+    if (altKey) {
+      provider = alt;
+      apiKey = altKey;
+    }
+  }
+  return { provider, apiKey };
+}
 function saveAiSettings(settings) {
   try {
     window.localStorage.setItem(AI_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
@@ -9425,31 +9457,26 @@ function BerandaChatWidget({ store, nkoState, selectedYears }) {
     setError("");
     const nextMessages = [...messages, { role: "user", text: q }];
     setMessages(nextMessages);
-    // Gabungkan setelan lokal dengan setelan dari server (server menang bila tersedia).
-    let live = { ...loadAiSettings(), ...(aiSettingsRef.current || {}) };
-    if (!live.claudeApiKey && !live.geminiApiKey) {
-      try {
-        const remote = await performuApiFetch("/settings/ai-settings");
-        if (remote) {
-          live = { ...live, ...remote };
-          setAiSettings(live);
-        }
-      } catch (e) {}
-    }
+    // Setelan AI adalah milik Admin dan disimpan di server. SELALU tarik versi server saat
+    // mengirim, lalu pakai itu sebagai sumber kebenaran (provider + kunci API sekaligus).
+    // Menyandarkan diri pada salinan localStorage membuat login User memakai provider/kunci
+    // basi milik perangkat itu sendiri — penyebab error 401 "invalid x-api-key".
+    const live = { ...(aiSettingsRef.current || {}), ...(await resolveAiSettings()) };
+    setAiSettings(live);
     if (!live.enabled) {
       setMessages([...nextMessages, { role: "assistant", text: "Asisten AI sedang dinonaktifkan. Hubungi Admin untuk mengaktifkannya di Pengaturan AI." }]);
       return;
     }
-    const apiKey = live.provider === "gemini" ? live.geminiApiKey : live.claudeApiKey;
+    const { provider, apiKey } = resolveAiProvider(live);
     if (!apiKey) {
-      setMessages([...nextMessages, { role: "assistant", text: `Kunci API ${live.provider === "gemini" ? "Gemini" : "Claude"} belum tersedia. Minta Admin mengisinya di Pengaturan AI.` }]);
+      setMessages([...nextMessages, { role: "assistant", text: `Kunci API ${provider === "gemini" ? "Gemini" : "Claude"} belum tersedia. Minta Admin mengisinya di Pengaturan AI.` }]);
       return;
     }
     setLoading(true);
     try {
       const dataContext = buildChatDataContext(store, nkoState, selectedYears);
       const prompt = buildChatPrompt(q, dataContext, messages);
-      const text = live.provider === "gemini"
+      const text = provider === "gemini"
         ? await callGeminiAnalysis(apiKey, live.geminiModel, prompt)
         : await callClaudeAnalysis(apiKey, live.claudeModel, prompt);
       setMessages([...nextMessages, { role: "assistant", text }]);
@@ -9686,24 +9713,24 @@ function InsightCard({
   };
   const runAiAnalysis = async () => {
     setError("");
-    const live = loadAiSettings();
+    const live = await resolveAiSettings();
     if (!live.enabled) {
       setError("Asisten AI dinonaktifkan. Aktifkan di Pengaturan AI terlebih dahulu.");
       return;
     }
-    const apiKey = live.provider === "gemini" ? live.geminiApiKey : live.claudeApiKey;
+    const { provider, apiKey } = resolveAiProvider(live);
     if (!apiKey) {
       const fallback = buildRuleBasedSummary(title, trend, unit, decimals);
       setDraft(fallback);
       onChangeNote(fallback);
-      setError(`Kunci API ${live.provider === "gemini" ? "Gemini" : "Claude"} belum diisi di Pengaturan AI. Menampilkan ringkasan otomatis berbasis data.`);
+      setError(`Kunci API ${provider === "gemini" ? "Gemini" : "Claude"} belum diisi di Pengaturan AI. Menampilkan ringkasan otomatis berbasis data.`);
       setEditing(true);
       return;
     }
     setLoading(true);
     try {
       const prompt = buildAiPrompt(title, trend, unit, decimals, cat);
-      const text = live.provider === "gemini"
+      const text = provider === "gemini"
         ? await callGeminiAnalysis(apiKey, live.geminiModel, prompt)
         : await callClaudeAnalysis(apiKey, live.claudeModel, prompt);
       setDraft(text);
@@ -9737,14 +9764,14 @@ function InsightCard({
   };
   const runRootCauseAnalysis = async () => {
     setRcError("");
-    const live = loadAiSettings();
+    const live = await resolveAiSettings();
     if (!live.enabled) {
       setRcError("Asisten AI dinonaktifkan. Aktifkan di Pengaturan AI terlebih dahulu.");
       return;
     }
-    const apiKey = live.provider === "gemini" ? live.geminiApiKey : live.claudeApiKey;
+    const { provider, apiKey } = resolveAiProvider(live);
     if (!apiKey) {
-      setRcError(`Kunci API ${live.provider === "gemini" ? "Gemini" : "Claude"} belum diisi di Pengaturan AI. Isi kunci API terlebih dahulu untuk menjalankan Analisa Root Cause.`);
+      setRcError(`Kunci API ${provider === "gemini" ? "Gemini" : "Claude"} belum diisi di Pengaturan AI. Isi kunci API terlebih dahulu untuk menjalankan Analisa Root Cause.`);
       return;
     }
     setRcLoading(true);
@@ -9758,7 +9785,7 @@ function InsightCard({
         dataContext = { type: "itemHistory", history: itemHistory };
       }
       const prompt = buildRootCauseAiPrompt(title, trend, unit, decimals, cat, notes, dataContext);
-      const text = live.provider === "gemini"
+      const text = provider === "gemini"
         ? await callGeminiAnalysis(apiKey, live.geminiModel, prompt)
         : await callClaudeAnalysis(apiKey, live.claudeModel, prompt);
       setRcDraft(text);
