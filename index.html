@@ -108,6 +108,7 @@ const ICON_PATHS = {
   edit: "M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z",
   check: "M20 6 9 17l-5-5",
   sparkles: "M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8",
+  presentation: "M3 4h18M4 4v9a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V4M12 14v4M9 21l3-3 3 3",
   "message-circle": "M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z",
   loader: "M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8",
   lock: "M6 10V7a6 6 0 1 1 12 0v3M5 10h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z"
@@ -8132,13 +8133,17 @@ function NkoFormulaRow({ node, onUpdate, disableManualRP, compact, hasSubItems, 
 }
 
 /* --- Hasil tab: computed monthly-style output table matching the SA Kontrak Kinerja format --- */
-function NkoHasilTab({ structure, year, monthIdx, unitName, store }) {
+// mode: "realisasi" (default) atau "prognosa". Pada mode Prognosa seluruh perhitungan memakai
+// data Prognosa (forecast) dan kolom "Realisasi" berganti nama menjadi "Prognosa".
+function NkoHasilTab({ structure, year, monthIdx, unitName, store, mode }) {
   const E = React.createElement;
-  const result = useMemo(() => nkoComputeStructureResult(structure, store, year, monthIdx), [structure, store, year, monthIdx]);
+  const useForecast = mode === "prognosa";
+  const valueColLabel = useForecast ? "Prognosa" : "Realisasi";
+  const result = useMemo(() => nkoComputeStructureResult(structure, store, year, monthIdx, useForecast), [structure, store, year, monthIdx, useForecast]);
   const monthLabel = monthIdx !== null && monthIdx !== undefined ? MONTHS[monthIdx] : null;
 
   function exportExcel() {
-    const rows = [["No", "Uraian", "Polarisasi", "Satuan", "Bobot", "Rencana", "Realisasi", "% Pencapaian", "Nilai"]];
+    const rows = [["No", "Uraian", "Polarisasi", "Satuan", "Bobot", "Rencana", valueColLabel, "% Pencapaian", "Nilai"]];
     result.categories.forEach(cat => {
       rows.push([cat.num, cat.label, "", "%", fmtNum(cat.weight, 2), "", "", "", fmtNum(cat.nilai, 2)]);
       cat.items.forEach((item, idx) => {
@@ -8155,7 +8160,7 @@ function NkoHasilTab({ structure, year, monthIdx, unitName, store }) {
     const ws = XLSX.utils.aoa_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "NKO");
-    XLSX.writeFile(wb, `Form_NKO_${unitName || "Unit"}_${monthLabel ? monthLabel + "_" : ""}${year}.xlsx`);
+    XLSX.writeFile(wb, `Form_NKO_${useForecast ? "Prognosa_" : ""}${unitName || "Unit"}_${monthLabel ? monthLabel + "_" : ""}${year}.xlsx`);
   }
 
   function exportPdf() {
@@ -8164,7 +8169,7 @@ function NkoHasilTab({ structure, year, monthIdx, unitName, store }) {
     const monthFullLabel = monthIdx !== null && monthIdx !== undefined ? MONTHS_FULL[monthIdx] : null;
     doc.setFontSize(11);
     doc.setFont(undefined, "bold");
-    doc.text("HASIL SA KONTRAK KINERJA", pageWidth / 2, 40, { align: "center" });
+    doc.text(useForecast ? "HASIL SA KONTRAK KINERJA (PROGNOSA)" : "HASIL SA KONTRAK KINERJA", pageWidth / 2, 40, { align: "center" });
     doc.setFontSize(9);
     doc.setFont(undefined, "normal");
     doc.text(`PT PLN NP UNIT PEMBANGKITAN BRANTAS`, pageWidth / 2, 56, { align: "center" });
@@ -8199,7 +8204,7 @@ function NkoHasilTab({ structure, year, monthIdx, unitName, store }) {
       startY: 84,
       margin: { left: leftMargin, right: leftMargin },
       tableWidth: tableWidth,
-      head: [["No", "Indikator Kinerja Kunci", "Polarisasi", "Satuan", "Bobot", "Rencana", "Realisasi", "% Pencapaian", "Nilai"]],
+      head: [["No", "Indikator Kinerja Kunci", "Polarisasi", "Satuan", "Bobot", "Rencana", valueColLabel, "% Pencapaian", "Nilai"]],
       body,
       styles: { fontSize: 6.5, cellPadding: 3, overflow: "linebreak" },
       headStyles: { fillColor: [15, 42, 63], textColor: 255, fontStyle: "bold", fontSize: 6.5 },
@@ -8215,7 +8220,7 @@ function NkoHasilTab({ structure, year, monthIdx, unitName, store }) {
         8: { cellWidth: colWidths[8], halign: "right" }
       }
     });
-    doc.save(`Form_NKO_${unitName || "Unit"}_${monthFullLabel ? monthFullLabel + "_" : ""}${year}.pdf`);
+    doc.save(`Form_NKO_${useForecast ? "Prognosa_" : ""}${unitName || "Unit"}_${monthFullLabel ? monthFullLabel + "_" : ""}${year}.pdf`);
   }
 
   return E("div", { className: "flex flex-col gap-4" },
@@ -8238,7 +8243,7 @@ function NkoHasilTab({ structure, year, monthIdx, unitName, store }) {
     E("div", { className: "overflow-x-auto border border-slate-100 rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,0.04)]" },
       E("table", { className: "w-full text-sm" },
         E("thead", null, E("tr", { className: "bg-slate-50 text-slate-500 text-xs" },
-          ["No", "Indikator Kinerja Kunci", "Polarisasi", "Satuan", "Bobot", "Rencana", "Realisasi", "% Pencapaian", "Nilai"].map((h, i) =>
+          ["No", "Indikator Kinerja Kunci", "Polarisasi", "Satuan", "Bobot", "Rencana", valueColLabel, "% Pencapaian", "Nilai"].map((h, i) =>
             E("th", { key: i, className: `px-3 py-2 font-medium ${i === 1 ? "text-left" : "text-right"}` }, h))
         )),
         E("tbody", null,
@@ -8441,6 +8446,436 @@ function NkoStructureExportImportButtons({ structure, year, store, onReplaceStru
     E("input", { ref: fileRef, type: "file", accept: ".xlsx,.xls", className: "hidden", onChange: handleImportFile })
   );
 }
+/* ===========================================================================
+   Tab "Paparan" — Laporan Kinerja Unit dalam bentuk slide
+   ---------------------------------------------------------------------------
+   Slide dibangun dari data yang sama dengan Beranda/Data Input, ditampilkan
+   langsung di layar (review), teks narasinya dapat diedit, lalu diekspor ke
+   PDF lanskap 16:9. Grafik digambar sebagai SVG sederhana supaya bisa
+   di-render ke PNG saat ekspor tanpa pustaka tambahan.
+   =========================================================================== */
+const PAPARAN_NOTES_KEY = "performu_paparan_notes_v1";
+function loadPaparanNotes() {
+  try {
+    const raw = window.localStorage.getItem(PAPARAN_NOTES_KEY);
+    return raw ? JSON.parse(raw) || {} : {};
+  } catch (e) {
+    return {};
+  }
+}
+function savePaparanNotes(notes) {
+  try {
+    window.localStorage.setItem(PAPARAN_NOTES_KEY, JSON.stringify(notes));
+  } catch (e) {}
+}
+function paparanNoteKey(year, monthIdx, slideId) {
+  return `${year}|${monthIdx === null || monthIdx === undefined ? "all" : monthIdx}|${slideId}`;
+}
+const PAPARAN_W = 960;
+const PAPARAN_H = 540;
+const PAPARAN_COLORS = { target: "#94a3b8", realisasi: "#008C4F", prognosa: "#f59e0b" };
+
+// --- Grafik garis sederhana (SVG murni, tanpa interaksi) --------------------
+function PaparanLineChart({ series, x, y, w, h, decimals, title, unit, compact }) {
+  const E = React.createElement;
+  const vals = [];
+  series.forEach(s => (s.data || []).forEach(v => {
+    if (v !== null && v !== undefined) vals.push(v);
+  }));
+  const hasData = vals.length > 0;
+  const rawMin = hasData ? Math.min(...vals) : 0;
+  const rawMax = hasData ? Math.max(...vals) : 1;
+  const pad = Math.max((rawMax - rawMin) * 0.15, Math.abs(rawMax) * 0.05, 0.5);
+  const yMin = rawMin - pad;
+  const yMax = rawMax + pad;
+  const labels = series[0] && series[0].labels ? series[0].labels : MONTHS;
+  const n = labels.length;
+  const padL = compact ? 42 : 52;
+  const padR = 10;
+  const padT = title ? (compact ? 22 : 28) : 8;
+  const padB = compact ? 20 : 26;
+  const innerW = Math.max(10, w - padL - padR);
+  const innerH = Math.max(10, h - padT - padB);
+  const xAt = i => x + padL + (n <= 1 ? innerW / 2 : innerW * i / (n - 1));
+  const yAt = v => y + padT + innerH - (v - yMin) / (yMax - yMin || 1) * innerH;
+  const fsAxis = compact ? 7.5 : 9;
+  const ticks = 4;
+  const els = [];
+  if (title) els.push(E("text", { key: "t", x: x + padL, y: y + (compact ? 12 : 16), fontSize: compact ? 10.5 : 13, fontWeight: "700", fill: "#0F2A3F" }, title));
+  for (let k = 0; k <= ticks; k++) {
+    const v = yMin + (yMax - yMin) * k / ticks;
+    els.push(E("line", { key: "g" + k, x1: x + padL, y1: yAt(v), x2: x + padL + innerW, y2: yAt(v), stroke: "#e2e8f0", strokeWidth: 1 }));
+    els.push(E("text", { key: "gl" + k, x: x + padL - 5, y: yAt(v) + 3, textAnchor: "end", fontSize: fsAxis, fill: "#94a3b8" }, fmtNum(roundByDecimals(v, decimals), decimals)));
+  }
+  labels.forEach((lb, i) => {
+    if (compact && n > 6 && i % 2 === 1) return;
+    els.push(E("text", { key: "x" + i, x: xAt(i), y: y + padT + innerH + (compact ? 12 : 16), textAnchor: "middle", fontSize: fsAxis, fill: "#64748b" }, lb));
+  });
+  series.forEach((s, si) => {
+    const pts = (s.data || []).map((v, i) => v === null || v === undefined ? null : `${xAt(i)},${yAt(v)}`).filter(Boolean).join(" ");
+    if (!pts) return;
+    els.push(E("polyline", {
+      key: "p" + si, points: pts, fill: "none", stroke: s.color, strokeWidth: s.width || 2.2,
+      strokeDasharray: s.dash || undefined, strokeLinecap: "round", strokeLinejoin: "round", opacity: s.opacity === undefined ? 1 : s.opacity
+    }));
+    (s.data || []).forEach((v, i) => {
+      if (v === null || v === undefined) return;
+      els.push(E("circle", { key: "c" + si + "-" + i, cx: xAt(i), cy: yAt(v), r: compact ? 2 : 2.8, fill: "#ffffff", stroke: s.color, strokeWidth: 1.6 }));
+    });
+  });
+  if (!hasData) els.push(E("text", { key: "nd", x: x + w / 2, y: y + h / 2, textAnchor: "middle", fontSize: 11, fill: "#cbd5e1" }, "Belum ada data"));
+  // legenda
+  let lx = x + padL;
+  const ly = y + h - (compact ? 4 : 6);
+  series.forEach((s, si) => {
+    els.push(E("line", { key: "ll" + si, x1: lx, y1: ly - 3, x2: lx + 14, y2: ly - 3, stroke: s.color, strokeWidth: 2.2, strokeDasharray: s.dash || undefined }));
+    els.push(E("text", { key: "lt" + si, x: lx + 18, y: ly, fontSize: compact ? 7.5 : 9, fill: "#64748b" }, s.label));
+    lx += 22 + (s.label.length * (compact ? 4 : 4.8));
+  });
+  if (unit) els.push(E("text", { key: "u", x: x + padL, y: y + padT - 4, fontSize: fsAxis, fill: "#94a3b8" }, unit));
+  return E("g", null, els);
+}
+
+// --- Penyusun data tiap slide ----------------------------------------------
+function buildPaparanSlides(store, nkoState, year, monthIdx) {
+  const monthFull = monthIdx === null || monthIdx === undefined ? null : MONTHS_FULL[monthIdx];
+  const cutIdx = monthIdx === null || monthIdx === undefined ? MONTHS.length - 1 : monthIdx;
+  const trim = arr => arr.map((v, i) => i <= cutIdx ? v : null);
+  const catById = id => CATEGORIES.find(c => c.id === id);
+  const rowsOf = id => (store[id] && store[id].byYear ? store[id].byYear[year] : null) || [];
+  const slides = [];
+
+  slides.push({ id: "judul", title: "Laporan Kinerja Unit", kind: "title", subtitle: monthFull ? `Periode ${monthFull} ${year}` : `Periode Tahun ${year}` });
+
+  // 2. Trend NKO
+  let nkoRows = [];
+  try { nkoRows = nkoComputeMonthlyRows(nkoState, store, year); } catch (e) {}
+  slides.push({
+    id: "nko", title: "Trend Nilai Kinerja Organisasi (NKO)", kind: "chart",
+    charts: [{
+      decimals: 2,
+      series: [
+        { label: "Target", color: PAPARAN_COLORS.target, dash: "5 4", data: nkoRows.map(r => r.nkoPrognosa), labels: MONTHS },
+        { label: "Realisasi", color: PAPARAN_COLORS.realisasi, data: trim(nkoRows.map(r => r.nkoRealisasi)), labels: MONTHS },
+        { label: "Prognosa", color: PAPARAN_COLORS.prognosa, dash: "3 3", data: nkoRows.map(r => r.nkoForecast), labels: MONTHS }
+      ]
+    }]
+  });
+
+  // 3. Trend Kinerja Operasi (EAF/EFOR/PSST)
+  const opCat = catById("operasi");
+  const opRows = rowsOf("operasi");
+  slides.push({
+    id: "operasi", title: "Trend Kinerja Operasi",
+    kind: "chart-grid",
+    charts: (opCat ? opCat.groups : []).map(g => ({
+      title: g.label, decimals: opCat.decimals, unit: opCat.unit || "%",
+      series: [
+        { label: "Target", color: PAPARAN_COLORS.target, dash: "5 4", data: opRows.map(r => r[g.key + "Prognosa"]), labels: MONTHS },
+        { label: "Realisasi", color: PAPARAN_COLORS.realisasi, data: trim(opRows.map(r => r[g.key + "Realisasi"])), labels: MONTHS },
+        { label: "Prognosa", color: PAPARAN_COLORS.prognosa, dash: "3 3", data: opRows.map(r => r[g.key + "Forecast"]), labels: MONTHS }
+      ]
+    }))
+  });
+
+  // 4. Empat trend biaya (akumulasi)
+  const biayaIds = ["pemeliharaan", "administrasi", "investasi", "kimia"];
+  slides.push({
+    id: "biaya", title: "Trend Akumulasi Biaya",
+    kind: "chart-grid",
+    charts: biayaIds.map(id => {
+      const cat = catById(id);
+      if (!cat) return null;
+      const rows = rowsOf(id);
+      if (id === "kimia") {
+        // Biaya Kimia & Pelumas memakai baris KPI pada tab Akumulasi.
+        const targets = store.kimiaKpiTargets && store.kimiaKpiTargets[year] ? store.kimiaKpiTargets[year] : {};
+        let kpi = [];
+        try { kpi = computeKimiaKpiRow(cat, year, rows, targets); } catch (e) {}
+        return {
+          title: cat.title, decimals: 4, unit: cat.unit || "",
+          series: [
+            { label: "Target", color: PAPARAN_COLORS.target, dash: "5 4", data: kpi.map(m => m.target), labels: MONTHS },
+            { label: "Realisasi", color: PAPARAN_COLORS.realisasi, data: trim(kpi.map(m => m.realisasi)), labels: MONTHS },
+            { label: "Prognosa", color: PAPARAN_COLORS.prognosa, dash: "3 3", data: kpi.map(m => m.prognosa), labels: MONTHS }
+          ]
+        };
+      }
+      const akum = accumulateItemRows(cat, rows);
+      const sumAt = (p, suffix) => {
+        let sum = null;
+        akum.forEach(r => {
+          const v = r[p + suffix];
+          if (v !== null && v !== undefined) sum = (sum || 0) + v;
+        });
+        return sum === null ? null : roundByDecimals(sum, cat.decimals);
+      };
+      let lastReal = -1;
+      cat.periods.forEach((p, i) => {
+        if (rows.some(r => r[p + "Realisasi"] !== null && r[p + "Realisasi"] !== undefined)) lastReal = i;
+      });
+      const realCut = Math.min(lastReal, cutIdx);
+      return {
+        title: cat.title, decimals: cat.decimals, unit: cat.unit || "",
+        series: [
+          { label: "Target", color: PAPARAN_COLORS.target, dash: "5 4", data: cat.periods.map(p => sumAt(p, "Prognosa")), labels: MONTHS },
+          { label: "Realisasi", color: PAPARAN_COLORS.realisasi, data: cat.periods.map((p, i) => i <= realCut ? sumAt(p, "Realisasi") : null), labels: MONTHS },
+          { label: "Prognosa", color: PAPARAN_COLORS.prognosa, dash: "3 3", data: cat.periods.map(p => sumAt(p, "Forecast")), labels: MONTHS }
+        ]
+      };
+    }).filter(Boolean)
+  });
+
+  // 5. Rekap Kinerja Bisnis Proses (per triwulan, %capaian)
+  const bisnisCat = catById("bisnis");
+  const bisnisRows = rowsOf("bisnis");
+  let bisnisCap = [];
+  try { bisnisCap = computeLainnyaCapaianItemRows(bisnisCat, year, bisnisRows, store.capaianModes, store.capaianManualValues); } catch (e) {}
+  slides.push({
+    id: "bisnis", title: "Rekap Kinerja Bisnis Proses", kind: "table",
+    columns: ["Uraian", ...QUARTERS.map(q => `${q} %Realisasi`), ...QUARTERS.map(q => `${q} %Prognosa`)],
+    rows: bisnisCap.map(r => [r.label || "-",
+      ...QUARTERS.map(q => r[q + "CapaianRealisasi"] === null || r[q + "CapaianRealisasi"] === undefined ? "-" : `${fmtNum(r[q + "CapaianRealisasi"], 1)}%`),
+      ...QUARTERS.map(q => r[q + "CapaianPrognosa"] === null || r[q + "CapaianPrognosa"] === undefined ? "-" : `${fmtNum(r[q + "CapaianPrognosa"], 1)}%`)])
+  });
+
+  // 6. Rekap Kinerja Unit Lainnya (bulan terpilih)
+  const lainnyaCat = catById("lainnya");
+  const lainnyaRows = rowsOf("lainnya");
+  let lainnyaCap = [];
+  try { lainnyaCap = computeLainnyaCapaianItemRows(lainnyaCat, year, lainnyaRows, store.capaianModes, store.capaianManualValues); } catch (e) {}
+  const pKey = MONTHS[cutIdx];
+  const lainnyaAkum = lainnyaCat ? accumulateItemRows(lainnyaCat, lainnyaRows) : [];
+  slides.push({
+    id: "lainnya", title: `Rekap Kinerja Unit Lainnya${monthFull ? " — " + monthFull : ""}`, kind: "table",
+    columns: ["Uraian", "Target", "Realisasi", "Prognosa", "% Capaian Realisasi", "% Capaian Prognosa"],
+    rows: lainnyaAkum.map((r, i) => {
+      const cap = lainnyaCap[i] || {};
+      const d = lainnyaCat.decimals;
+      return [r.label || "-",
+        fmtNum(r[pKey + "Prognosa"], d), fmtNum(r[pKey + "Realisasi"], d), fmtNum(r[pKey + "Forecast"], d),
+        cap[pKey + "CapaianRealisasi"] === null || cap[pKey + "CapaianRealisasi"] === undefined ? "-" : `${fmtNum(cap[pKey + "CapaianRealisasi"], 1)}%`,
+        cap[pKey + "CapaianPrognosa"] === null || cap[pKey + "CapaianPrognosa"] === undefined ? "-" : `${fmtNum(cap[pKey + "CapaianPrognosa"], 1)}%`];
+    })
+  });
+  return slides;
+}
+
+// --- Render satu slide sebagai SVG (dipakai layar & ekspor PDF) -------------
+function paparanSlideSvgChildren(slide, note) {
+  const E = React.createElement;
+  const els = [];
+  els.push(E("rect", { key: "bg", x: 0, y: 0, width: PAPARAN_W, height: PAPARAN_H, fill: "#ffffff" }));
+  if (slide.kind === "title") {
+    els.push(E("rect", { key: "band", x: 0, y: 0, width: PAPARAN_W, height: PAPARAN_H, fill: "#0F2A3F" }));
+    els.push(E("text", { key: "t1", x: PAPARAN_W / 2, y: 230, textAnchor: "middle", fontSize: 44, fontWeight: "800", fill: "#ffffff" }, slide.title));
+    els.push(E("text", { key: "t2", x: PAPARAN_W / 2, y: 285, textAnchor: "middle", fontSize: 22, fill: "#7dd3a0" }, slide.subtitle || ""));
+    els.push(E("text", { key: "t3", x: PAPARAN_W / 2, y: 340, textAnchor: "middle", fontSize: 16, fill: "#cbd5e1" }, "PT PLN NP Unit Pembangkitan Brantas"));
+    if (note) {
+      const lines = paparanWrap(note, 78).slice(0, 3);
+      lines.forEach((ln, i) => els.push(E("text", { key: "n" + i, x: PAPARAN_W / 2, y: 400 + i * 22, textAnchor: "middle", fontSize: 14, fill: "#e2e8f0" }, ln)));
+    }
+    return els;
+  }
+  // header standar
+  els.push(E("rect", { key: "hb", x: 0, y: 0, width: PAPARAN_W, height: 62, fill: "#0F2A3F" }));
+  els.push(E("text", { key: "ht", x: 40, y: 39, fontSize: 22, fontWeight: "700", fill: "#ffffff" }, slide.title));
+  const noteLines = note ? paparanWrap(note, 130) : [];
+  const noteH = noteLines.length ? Math.min(noteLines.length, 4) * 18 + 16 : 0;
+  const bodyTop = 82;
+  const bodyH = PAPARAN_H - bodyTop - 30 - noteH;
+  if (slide.kind === "chart") {
+    els.push(E(PaparanLineChart, { key: "c0", x: 40, y: bodyTop, w: PAPARAN_W - 80, h: bodyH, decimals: slide.charts[0].decimals, series: slide.charts[0].series, unit: slide.charts[0].unit }));
+  } else if (slide.kind === "chart-grid") {
+    const list = slide.charts || [];
+    const cols = list.length <= 2 ? list.length || 1 : 2;
+    const rowsN = Math.ceil(list.length / cols) || 1;
+    const gapX = 18, gapY = 14;
+    const cw = (PAPARAN_W - 80 - gapX * (cols - 1)) / cols;
+    const ch = (bodyH - gapY * (rowsN - 1)) / rowsN;
+    list.forEach((c, i) => {
+      const r = Math.floor(i / cols), cIdx = i % cols;
+      els.push(E(PaparanLineChart, {
+        key: "c" + i, x: 40 + cIdx * (cw + gapX), y: bodyTop + r * (ch + gapY),
+        w: cw, h: ch, decimals: c.decimals, series: c.series, title: c.title, unit: c.unit, compact: true
+      }));
+    });
+  } else if (slide.kind === "table") {
+    const cols = slide.columns || [];
+    const rows = slide.rows || [];
+    const colW = (PAPARAN_W - 80) / cols.length;
+    const firstW = colW * 1.6;
+    const otherW = (PAPARAN_W - 80 - firstW) / Math.max(1, cols.length - 1);
+    const xOf = i => 40 + (i === 0 ? 0 : firstW + (i - 1) * otherW);
+    const rowH = Math.min(30, Math.max(18, (bodyH - 34) / Math.max(1, rows.length)));
+    els.push(E("rect", { key: "th", x: 40, y: bodyTop, width: PAPARAN_W - 80, height: 28, fill: "#f1f5f9" }));
+    cols.forEach((c, i) => els.push(E("text", {
+      key: "hc" + i, x: xOf(i) + 8, y: bodyTop + 18, fontSize: 10, fontWeight: "700", fill: "#475569"
+    }, c)));
+    rows.slice(0, 12).forEach((r, ri) => {
+      const ry = bodyTop + 28 + ri * rowH;
+      if (ri % 2 === 1) els.push(E("rect", { key: "rb" + ri, x: 40, y: ry, width: PAPARAN_W - 80, height: rowH, fill: "#f8fafc" }));
+      r.forEach((cell, ci) => els.push(E("text", {
+        key: "rc" + ri + "-" + ci, x: xOf(ci) + 8, y: ry + rowH / 2 + 4,
+        fontSize: 10.5, fill: ci === 0 ? "#0f172a" : "#334155", fontWeight: ci === 0 ? "600" : "400"
+      }, ci === 0 ? paparanTrunc(String(cell), 38) : String(cell))));
+    });
+    if (!rows.length) els.push(E("text", { key: "nd", x: PAPARAN_W / 2, y: bodyTop + 70, textAnchor: "middle", fontSize: 12, fill: "#cbd5e1" }, "Belum ada data"));
+  }
+  if (noteLines.length) {
+    const ny = PAPARAN_H - 30 - noteH + 6;
+    els.push(E("rect", { key: "nbg", x: 40, y: ny - 4, width: PAPARAN_W - 80, height: noteH, fill: "#f8fafc", rx: 6 }));
+    noteLines.slice(0, 4).forEach((ln, i) => els.push(E("text", { key: "nl" + i, x: 52, y: ny + 14 + i * 18, fontSize: 12, fill: "#334155" }, ln)));
+  }
+  els.push(E("text", { key: "ft", x: PAPARAN_W - 40, y: PAPARAN_H - 12, textAnchor: "end", fontSize: 9, fill: "#94a3b8" }, "PerformU — PT PLN NP UP Brantas"));
+  return els;
+}
+function paparanWrap(text, maxChars) {
+  const out = [];
+  String(text || "").split(/\n/).forEach(par => {
+    let line = "";
+    par.split(/\s+/).forEach(word => {
+      if ((line + " " + word).trim().length > maxChars) {
+        if (line) out.push(line);
+        line = word;
+      } else {
+        line = (line ? line + " " : "") + word;
+      }
+    });
+    if (line) out.push(line);
+  });
+  return out;
+}
+function paparanTrunc(t, n) {
+  return t.length > n ? t.slice(0, n - 1) + "…" : t;
+}
+
+// --- Komponen tab Paparan ---------------------------------------------------
+function PaparanTab({ store, nkoState, year, monthIdx, readOnly }) {
+  const E = React.createElement;
+  const [idx, setIdx] = useState(0);
+  const [notes, setNotes] = useState(() => loadPaparanNotes());
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState("");
+  const svgRefs = useRef({});
+  const slides = useMemo(() => buildPaparanSlides(store, nkoState, year, monthIdx), [store, nkoState, year, monthIdx]);
+  useEffect(() => {
+    if (idx >= slides.length) setIdx(0);
+  }, [slides.length, idx]);
+  const cur = slides[idx] || slides[0];
+  const noteKey = cur ? paparanNoteKey(year, monthIdx, cur.id) : null;
+  const noteVal = noteKey ? notes[noteKey] || "" : "";
+  const setNote = v => {
+    const next = { ...notes, [noteKey]: v };
+    setNotes(next);
+    savePaparanNotes(next);
+  };
+  const svgOf = (slide, key) => E("svg", {
+    ref: el => { svgRefs.current[slide.id] = el; },
+    key,
+    width: PAPARAN_W,
+    height: PAPARAN_H,
+    viewBox: `0 0 ${PAPARAN_W} ${PAPARAN_H}`,
+    xmlns: "http://www.w3.org/2000/svg",
+    style: { display: "block", width: "100%", height: "auto", fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif" }
+  }, paparanSlideSvgChildren(slide, notes[paparanNoteKey(year, monthIdx, slide.id)] || ""));
+
+  function svgToPng(svgEl) {
+    return new Promise((resolve, reject) => {
+      try {
+        const clone = svgEl.cloneNode(true);
+        clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+        const str = new XMLSerializer().serializeToString(clone);
+        const blob = new Blob([str], { type: "image/svg+xml;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {
+          const scale = 2;
+          const canvas = document.createElement("canvas");
+          canvas.width = PAPARAN_W * scale;
+          canvas.height = PAPARAN_H * scale;
+          const ctx2 = canvas.getContext("2d");
+          ctx2.fillStyle = "#ffffff";
+          ctx2.fillRect(0, 0, canvas.width, canvas.height);
+          ctx2.drawImage(img, 0, 0, canvas.width, canvas.height);
+          URL.revokeObjectURL(url);
+          resolve(canvas.toDataURL("image/png"));
+        };
+        img.onerror = e => { URL.revokeObjectURL(url); reject(new Error("Gagal merender slide ke gambar")); };
+        img.src = url;
+      } catch (e) { reject(e); }
+    });
+  }
+  async function exportPdf() {
+    if (typeof window.jspdf === "undefined") {
+      setError("Pustaka PDF belum termuat. Periksa koneksi internet lalu muat ulang halaman.");
+      return;
+    }
+    setError("");
+    setExporting(true);
+    try {
+      const doc = new window.jspdf.jsPDF({ orientation: "landscape", unit: "pt", format: [PAPARAN_W, PAPARAN_H] });
+      for (let i = 0; i < slides.length; i++) {
+        const el = svgRefs.current[slides[i].id];
+        if (!el) continue;
+        const png = await svgToPng(el);
+        if (i > 0) doc.addPage([PAPARAN_W, PAPARAN_H], "landscape");
+        doc.addImage(png, "PNG", 0, 0, PAPARAN_W, PAPARAN_H);
+      }
+      const mLabel = monthIdx === null || monthIdx === undefined ? "" : MONTHS_FULL[monthIdx] + "_";
+      doc.save(`Paparan_Kinerja_Unit_${mLabel}${year}.pdf`);
+    } catch (e) {
+      setError(e && e.message ? e.message : "Gagal membuat PDF.");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  return E("div", { className: "flex flex-col gap-4" },
+    E("div", { className: "flex items-center justify-between gap-3 flex-wrap" },
+      E("div", null,
+        E("p", { className: "text-sm font-bold text-slate-800" }, "Paparan Laporan Kinerja Unit"),
+        E("p", { className: "text-xs text-slate-400 mt-0.5" }, `${slides.length} slide — ${monthIdx === null || monthIdx === undefined ? "seluruh tahun " + year : MONTHS_FULL[monthIdx] + " " + year}. Tambahkan catatan pada tiap slide, lalu unduh sebagai PDF.`)),
+      E("button", {
+        type: "button", onClick: exportPdf, disabled: exporting,
+        className: "px-4 py-2 rounded-full text-sm font-semibold bg-[#0F2A3F] text-white hover:bg-[#16374f] transition flex items-center gap-1.5 disabled:opacity-50"
+      }, E(Icon, { name: "download", size: 14 }), exporting ? " Menyiapkan PDF..." : " Unduh PDF")),
+    error && E("p", { className: "text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-3 py-2" }, error),
+    E("div", { className: "flex gap-4 flex-col lg:flex-row" },
+      // daftar slide
+      E("div", { className: "flex lg:flex-col gap-2 overflow-x-auto lg:w-52 flex-shrink-0" },
+        slides.map((sl, i) => E("button", {
+          key: sl.id, type: "button", onClick: () => setIdx(i),
+          className: `text-left px-3 py-2 rounded-xl text-xs font-medium transition flex-shrink-0 whitespace-nowrap lg:whitespace-normal ${i === idx ? "bg-[#0F2A3F] text-white" : "bg-white text-slate-500 hover:bg-slate-100 shadow-[0_1px_2px_rgba(15,23,42,0.06)]"}`
+        }, `${i + 1}. ${sl.title}`))),
+      // pratinjau
+      E("div", { className: "flex-1 min-w-0 space-y-3" },
+        E("div", { className: "rounded-2xl overflow-hidden border border-slate-200 shadow-[0_1px_2px_rgba(15,23,42,0.04)] bg-white" }, cur ? svgOf(cur, "cur") : null),
+        E("div", { className: "flex items-center justify-between gap-2" },
+          E("button", {
+            type: "button", onClick: () => setIdx(i => Math.max(0, i - 1)), disabled: idx === 0,
+            className: "px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-40"
+          }, "← Sebelumnya"),
+          E("span", { className: "text-xs text-slate-400" }, `Slide ${idx + 1} dari ${slides.length}`),
+          E("button", {
+            type: "button", onClick: () => setIdx(i => Math.min(slides.length - 1, i + 1)), disabled: idx >= slides.length - 1,
+            className: "px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-40"
+          }, "Berikutnya →")),
+        !readOnly && E("div", null,
+          E("label", { className: "text-xs font-semibold text-slate-600 block mb-1.5" }, "Catatan / narasi slide ini"),
+          E("textarea", {
+            value: noteVal, rows: 3,
+            placeholder: "Tulis penjelasan yang ingin ditampilkan pada slide ini...",
+            onChange: e => setNote(e.target.value),
+            className: "w-full text-xs bg-white border border-slate-200 rounded-xl px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-300"
+          }),
+          E("p", { className: "text-[11px] text-slate-400 mt-1" }, "Catatan langsung muncul pada pratinjau di atas dan ikut tercetak di PDF.")))),
+    // slide tersembunyi untuk keperluan ekspor
+    E("div", { style: { position: "absolute", left: "-99999px", top: 0, width: PAPARAN_W } },
+      slides.map(sl => sl.id === (cur && cur.id) ? null : svgOf(sl, "hid-" + sl.id)))
+  );
+}
+
 function LaporanPage({ nkoState, onChangeNkoState, selectedYears, store, readOnly }) {
   const E = React.createElement;
   const [tab, setTab] = useState(readOnly ? "hasil" : "struktur");
@@ -8498,11 +8933,17 @@ function LaporanPage({ nkoState, onChangeNkoState, selectedYears, store, readOnl
   }
 
   const tabs = readOnly
-    ? [{ key: "hasil", label: "Hasil Perhitungan", icon: "bar-chart" }]
+    ? [
+        { key: "hasil", label: "Hasil Perhitungan", icon: "bar-chart" },
+        { key: "paparan", label: "Paparan", icon: "presentation" }
+      ]
     : [
         { key: "struktur", label: "Struktur & Bobot", icon: "layers" },
-        { key: "hasil", label: "Hasil Perhitungan", icon: "bar-chart" }
+        { key: "hasil", label: "Hasil Perhitungan", icon: "bar-chart" },
+        { key: "paparan", label: "Paparan", icon: "presentation" }
       ];
+  // Sub-tab pada Hasil Perhitungan: Realisasi (default) vs Prognosa.
+  const [hasilMode, setHasilMode] = useState("realisasi");
 
   // Impor: SELALU berlaku untuk seluruh bulan pada tahun yang sedang dibuka (penyesuaian
   // per bulan direset), sesuai perilaku yang diharapkan pada tombol "Impor".
@@ -8559,7 +9000,16 @@ function LaporanPage({ nkoState, onChangeNkoState, selectedYears, store, readOnl
       }, E(Icon, { name: t.icon, size: 14 }), t.label))
     ),
     !readOnly && tab === "struktur" && E(NkoStrukturTab, { structure, onChange: updateStructure, store, year, monthIdx }),
-    (readOnly || tab === "hasil") && E(NkoHasilTab, { structure, year, monthIdx, store }),
+    tab === "hasil" && E("div", { className: "flex items-center gap-2 flex-wrap" },
+      [["realisasi", "Realisasi"], ["prognosa", "Prognosa"]].map(([k, lbl]) => E("button", {
+        key: k,
+        type: "button",
+        onClick: () => setHasilMode(k),
+        title: k === "prognosa" ? "Hitung NKO memakai data Prognosa (proyeksi)" : "Hitung NKO memakai data Realisasi (aktual)",
+        className: `px-4 py-2 rounded-full text-xs font-semibold transition ${hasilMode === k ? "bg-[#0F2A3F] text-white" : "bg-white text-slate-500 shadow-[0_1px_2px_rgba(15,23,42,0.06)] hover:bg-slate-100"}`
+      }, lbl))),
+    tab === "hasil" && E(NkoHasilTab, { structure, year, monthIdx, store, mode: hasilMode }),
+    tab === "paparan" && E(PaparanTab, { store, nkoState, year, monthIdx, readOnly }),
     showScrollTop && E("button", {
       onClick: scrollToTop,
       title: "Naik ke atas",
