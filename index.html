@@ -9338,7 +9338,8 @@ function buildChatDataContext(store, nkoState, selectedYears) {
   lines.push(`PENTING — cara membaca data:`);
   lines.push(`- KPI Kinerja Operasi (EAF, EFOR, PSST) dan seluruh KPI penyusun NKO dinilai dari %CAPAIAN terhadap targetnya, BUKAN dari kenaikan/penurunan nilai mentahnya. Selalu rujuk baris "%CAPAIAN" saat menjelaskan naik/turunnya NKO.`);
   lines.push(`- Nilai mentah bisa turun sementara capaiannya naik (dan sebaliknya) karena targetnya juga berubah tiap bulan, dan sebagian KPI berpolarisasi Inverse (nilai lebih rendah = lebih baik, mis. EFOR dan biaya).`);
-  lines.push(`- NKO adalah jumlah tertimbang dari (%capaian x bobot) seluruh KPI. Penurunan NKO berarti ada KPI yang %capaiannya turun atau bobotnya besar dan capaiannya rendah.`);
+  lines.push(`- NKO adalah jumlah tertimbang dari (%capaian x bobot) seluruh KPI. Untuk menjelaskan naik/turunnya NKO, WAJIB memakai bagian "Struktur & Bobot NKO" di bawah: cari KPI yang baris "nilai (kontribusi)"-nya berubah paling besar antar bulan, lalu sebutkan bobot dan %capaiannya. KPI berbobot besar yang capaiannya turun sedikit bisa berdampak lebih besar daripada KPI berbobot kecil yang capaiannya anjlok, jadi jangan menyimpulkan hanya dari perubahan %capaian.`);
+  lines.push(`- Perhatikan juga KPI bertipe Nilai Pengurang (deduction): nilainya negatif dan langsung memotong NKO tanpa dikalikan bobot.`);
   const fmtSeries = (label, arr, decimals, unit) => {
     const parts = MONTHS.map((m, i) => {
       const v = arr[i];
@@ -9354,6 +9355,61 @@ function buildChatDataContext(store, nkoState, selectedYears) {
     fmtSeries("NKO Target", nkoRows.map(r => r.nkoPrognosa), 2, "");
     fmtSeries("NKO Realisasi", nkoRows.map(r => r.nkoRealisasi), 2, "");
     fmtSeries("NKO Prognosa", nkoRows.map(r => r.nkoForecast), 2, "");
+  } catch (e) {}
+  // Struktur & Bobot NKO + kontribusi tertimbang tiap KPI per bulan.
+  // Inilah kunci untuk menjelaskan naik/turunnya NKO: NKO = jumlah (nilai) seluruh KPI, dan
+  // nilai = %capaian / 100 x bobot. Jadi KPI berbobot besar yang capaiannya turun sedikit bisa
+  // berdampak jauh lebih besar daripada KPI berbobot kecil yang capaiannya anjlok.
+  try {
+    const yearStructure = nkoState && nkoState.byYear ? nkoState.byYear[year] : null;
+    if (yearStructure) {
+      // Hitung hasil per bulan (memakai struktur bulan ybs bila ada penyesuaian per bulan).
+      const perMonth = MONTHS.map((m, idx) => {
+        const structure = nkoStructureForMonth(yearStructure, idx);
+        if (!structure) return null;
+        return {
+          realisasi: nkoComputeStructureResult(structure, store, year, idx, false),
+          prognosa: nkoComputeStructureResult(structure, store, year, idx, true)
+        };
+      });
+      const ref = perMonth.find(Boolean);
+      if (ref) {
+        lines.push("");
+        lines.push("== Struktur & Bobot NKO (menu Laporan > Struktur & Bobot) ==");
+        lines.push(`Rumus: nilai KPI = (%capaian / 100) x bobot. NKO = jumlah nilai seluruh KPI. Total bobot = ${fmtNum(ref.realisasi.totalWeight, 2)}.`);
+        lines.push(`Untuk menjelaskan perubahan NKO antar bulan, bandingkan baris "nilai" (kontribusi tertimbang) tiap KPI — bukan hanya %capaiannya.`);
+        ref.realisasi.categories.forEach((cat, ci) => {
+          const isDeduction = (cat.items || []).some(it => it.formulaType === "deduction");
+          lines.push("");
+          lines.push(`Kategori ${cat.num || ci + 1}. ${cat.label || "-"} — bobot kategori ${fmtNum(cat.weight, 2)}${isDeduction ? " (NILAI PENGURANG: nilainya negatif, mengurangi NKO)" : ""}`);
+          (cat.items || []).forEach((item, ii) => {
+            const label = item.label || `KPI ${ii + 1}`;
+            const bobot = item.weight || 0;
+            const pctR = MONTHS.map((m, idx) => {
+              const it = perMonth[idx] && perMonth[idx].realisasi.categories[ci] && perMonth[idx].realisasi.categories[ci].items[ii];
+              return it ? it.pct : null;
+            });
+            const pctP = MONTHS.map((m, idx) => {
+              const it = perMonth[idx] && perMonth[idx].prognosa.categories[ci] && perMonth[idx].prognosa.categories[ci].items[ii];
+              return it ? it.pct : null;
+            });
+            const nilaiP = MONTHS.map((m, idx) => {
+              const it = perMonth[idx] && perMonth[idx].prognosa.categories[ci] && perMonth[idx].prognosa.categories[ci].items[ii];
+              return it ? it.nilai : null;
+            });
+            const nilaiR = MONTHS.map((m, idx) => {
+              const it = perMonth[idx] && perMonth[idx].realisasi.categories[ci] && perMonth[idx].realisasi.categories[ci].items[ii];
+              return it ? it.nilai : null;
+            });
+            lines.push(`  KPI "${label}" — bobot ${fmtNum(bobot, 2)}, rumus ${item.formulaType || "normal"}, sumber ${item.sourceType === "linked" ? "Data Input tab " + (item.linkedCatId || "-") : item.sourceType === "na" ? "N/A" : "input manual"}`);
+            fmtSeries(`    %capaian realisasi`, pctR, 1, "%");
+            fmtSeries(`    %capaian prognosa`, pctP, 1, "%");
+            fmtSeries(`    nilai (kontribusi) realisasi`, nilaiR, 2, "");
+            fmtSeries(`    nilai (kontribusi) prognosa`, nilaiP, 2, "");
+          });
+        });
+      }
+    }
   } catch (e) {}
   CATEGORIES.filter(c => c.id !== "nko").forEach(cat => {
     const catStore = store[cat.id];
@@ -9417,7 +9473,7 @@ function buildChatPrompt(question, dataContext, history) {
   lines.push("Anda adalah asisten analis kinerja pembangkit listrik pada aplikasi PerformU (PT PLN NP Unit Pembangkitan Brantas).");
   lines.push("Jawab pertanyaan pengguna HANYA berdasarkan data di bawah ini. Jika data tidak cukup untuk menjawab, katakan terus terang bagian mana yang belum tersedia — jangan mengarang angka.");
   lines.push("Jawab dalam bahasa Indonesia yang ringkas (maksimal 6 kalimat), sebutkan angka pendukung, dan bila relevan sebutkan kemungkinan penyebab beserta satu saran tindak lanjut.");
-  lines.push("Saat menjelaskan naik/turunnya NKO, WAJIB merujuk %CAPAIAN KPI penyusunnya (mis. \"EAF %capaian turun dari 101,2% ke 97,8%\"), bukan perubahan nilai mentah KPI tersebut.");
+  lines.push("Saat menjelaskan naik/turunnya NKO, telusuri dari STRUKTUR & BOBOT-nya: sebutkan KPI mana yang kontribusi tertimbangnya (baris \"nilai\") turun paling besar, berapa bobot KPI itu, dan berapa %capaiannya di bulan tsb dibanding bulan sebelumnya. Contoh bentuk jawaban: \"Penurunan terbesar berasal dari KPI X (bobot 15,00) yang nilainya turun dari 15,18 ke 13,50 karena %capaiannya turun dari 101,2% ke 90,0%\". Jangan menyimpulkan penyebab hanya dari perubahan nilai mentah KPI atau dari %capaian tanpa memperhitungkan bobot.");
   lines.push("");
   lines.push("=== DATA ===");
   lines.push(dataContext);
