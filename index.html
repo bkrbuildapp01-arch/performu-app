@@ -1033,10 +1033,11 @@ function nkoComputeStructureResult(structure, store, year, monthIdx, useForecast
   return { categories, totalWeight: round4(totalWeight), totalNilai: round4(totalNilai) };
 }
 function nkoHasAnyRealisasiForMonth(structure, store, year, monthIdx) {
-  // NKO baru dianggap "terealisasi" pada suatu bulan bila SELURUH KPI yang mengambil data dari
-  // Data Input (sourceType "linked") sudah punya realisasi di bulan tsb. Kalau salah satu sumber
-  // (mis. EAF) belum terisi, NKO realisasi dikosongkan — tanpa aturan ini NKO tetap menampilkan
-  // angka parsial untuk bulan-bulan yang datanya belum masuk.
+  // NKO dianggap "terealisasi" pada suatu bulan bila MINIMAL SATU KPI yang mengambil data dari
+  // Data Input (sourceType "linked") sudah punya realisasi di bulan tsb — mengikuti ketersediaan
+  // data sumber seperti EAF. KPI ber-input manual sengaja TIDAK ikut menentukan: nilainya sama
+  // untuk semua bulan, sehingga kalau diperhitungkan NKO akan terlihat "terealisasi" sepanjang
+  // tahun walau data dari Data Input belum masuk.
   let anyFilled = false;
   let linkedTotal = 0;
   let linkedFilled = 0;
@@ -1056,7 +1057,7 @@ function nkoHasAnyRealisasiForMonth(structure, store, year, monthIdx) {
       if (subs.length) subs.forEach(check);else check(item);
     });
   });
-  if (linkedTotal > 0) return linkedFilled === linkedTotal;
+  if (linkedTotal > 0) return linkedFilled > 0;
   return anyFilled;
 }
 function nkoComputeMonthlyRows(nkoState, store, year) {
@@ -1845,15 +1846,17 @@ function buildItemRowSeries(cat, row) {
     Forecast: row[p + "Forecast"]
   }));
 }
-function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaianManualValues, pemMode) {
+// `preferForecast` = pengguna mengklik titik Prognosa pada grafik, sehingga seluruh kartu
+// menampilkan data Prognosa untuk bulan tsb (bukan Realisasi) — selama nilainya tersedia.
+function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaianManualValues, pemMode, preferForecast) {
   if (monthIdx === null || monthIdx === undefined) return computeTrend(cat, rows, groupKey);
   if (cat.type === "monthlyGrouped") {
     if (!rows[monthIdx]) return computeTrend(cat, rows, groupKey);
     const g = cat.groups.find(x => x.key === groupKey) || cat.groups[0];
     const row = rows[monthIdx];
     const realisasi = row[g.key + "Realisasi"];
-    const isProgFallback = realisasi === null || realisasi === undefined;
     const forecastValue = row[g.key + "Forecast"];
+    const isProgFallback = realisasi === null || realisasi === undefined || !!(preferForecast && forecastValue !== null && forecastValue !== undefined);
     if (isProgFallback && (forecastValue === null || forecastValue === undefined)) return computeTrend(cat, rows, groupKey);
     const latest = isProgFallback ? forecastValue : realisasi;
     const prevRow = monthIdx > 0 ? rows[monthIdx - 1] : null;
@@ -1885,7 +1888,7 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
     if (!rows[monthIdx]) return computeTrend(cat, rows, groupKey);
     const row = rows[monthIdx];
     const realisasi = row.realisasi;
-    const isProgFallback = realisasi === null || realisasi === undefined;
+    const isProgFallback = realisasi === null || realisasi === undefined || !!(preferForecast && row.forecast !== null && row.forecast !== undefined);
     if (isProgFallback && (row.forecast === null || row.forecast === undefined)) return computeTrend(cat, rows, groupKey);
     // Mode Akumulasi Bulanan (Fisik Pemeliharaan / PRK Investasi Terkontrak): angka utama kartu
     // mengikuti kolom akumulasi pada Data Input.
@@ -1955,7 +1958,8 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
       }
     });
     let isProgFallback = false;
-    if (!has) {
+    // `!has` = realisasi kosong; `preferForecast` = pengguna memilih titik Prognosa pada grafik.
+    if (!has || preferForecast) {
       // Prognosa (Forecast) fallback selalu memakai nilai akumulasi (jika kategori mendukung akumulasi),
       // tidak bergantung pada pemMode.
       let forecastSum = 0,
@@ -1977,9 +1981,17 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
           }
         });
       }
-      if (!forecastHas) return computeTrend(cat, rows, groupKey);
-      sum = forecastSum;
-      isProgFallback = true;
+      if (!forecastHas) {
+        // Tidak ada prognosa: kalau realisasi ada, tetap pakai realisasi.
+        if (has) {
+          isProgFallback = false;
+        } else {
+          return computeTrend(cat, rows, groupKey);
+        }
+      } else {
+        sum = forecastSum;
+        isProgFallback = true;
+      }
     }
     let prevSum = 0,
       prevHas = false;
@@ -2198,9 +2210,10 @@ function StatCard({
   capaianModes,
   capaianManualValues,
   pemMode,
+  preferForecast,
   onAnalisa
 }) {
-  const trend = useMemo(() => computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaianManualValues, pemMode), [cat, rows, groupKey, monthIdx, capaianModes, capaianManualValues, pemMode]);
+  const trend = useMemo(() => computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaianManualValues, pemMode, preferForecast), [cat, rows, groupKey, monthIdx, capaianModes, capaianManualValues, pemMode, preferForecast]);
   // Badge di sebelah angka Prognosa Akhir Periode menampilkan %CAPAIAN prognosa terhadap
   // target akhir periode (memperhitungkan polarisasi Normal/Inverse), bukan deviasi/kenaikan.
   const capaianAkhirPct = useMemo(() => {
@@ -2557,11 +2570,13 @@ function MetricChart({
   const activeValue = activePoint ? activeIsForecast ? activePoint.d.Forecast : activeIsProg ? activePoint.d.Prognosa : activePoint.d.Realisasi : null;
   const activeColor = activeIsForecast ? "#f59e0b" : activeIsProg ? "#64748b" : "#0F2A3F";
   const activeMonthLabel = activePoint ? activePoint.d.bulan : "";
+  // Jenis titik yang sedang aktif ikut dikirim ke pemanggil, supaya kartu-kartu Beranda bisa
+  // menampilkan data Prognosa ketika titik Prognosa (garis oranye) yang diklik.
   useEffect(() => {
-    if (onActiveChange) onActiveChange(activeIdx);
-  }, [activeIdx]);
+    if (onActiveChange) onActiveChange(activeIdx, activeIsForecast ? "forecast" : activeIsProg ? "prognosa" : "realisasi");
+  }, [activeIdx, activeIsForecast, activeIsProg]);
   useEffect(() => {
-    if (detailActive && onActiveChange && detailSelIdx !== null && detailSelIdx !== undefined) onActiveChange(detailSelIdx);
+    if (detailActive && onActiveChange && detailSelIdx !== null && detailSelIdx !== undefined) onActiveChange(detailSelIdx, "realisasi");
   }, [detailActive, detailSelIdx]);
   const seriesArr = activeIsForecast ? withForecast : activeIsProg ? withPrognosa : withRealisasi;
   const posInSeries = resolvedActive ? seriesArr.findIndex(x => x.i === activeIdx) : -1;
@@ -2611,7 +2626,7 @@ function MetricChart({
       series,
       idx
     });
-    if (onActiveChange) onActiveChange(idx);
+    if (onActiveChange) onActiveChange(idx, series);
   }
   function computeGeom(w, h, isZoom) {
     // Pada mode Perbesar, sisi kiri diberi ruang tambahan agar label skala sumbu-Y tidak
@@ -4779,7 +4794,7 @@ function bisnisQuarterForMonth(monthIdx) {
   if (monthIdx <= 10) return { qIdx: 2, prognosaOnly: false };
   return { qIdx: 3, prognosaOnly: false };
 }
-function bisnisCapaianForMonth(capRow, row, monthIdx) {
+function bisnisCapaianForMonth(capRow, row, monthIdx, preferForecast) {
   if (!capRow) return null;
   let qIdx, prognosaOnly = false;
   if (monthIdx === null || monthIdx === undefined) {
@@ -4797,7 +4812,7 @@ function bisnisCapaianForMonth(capRow, row, monthIdx) {
   }
   const period = QUARTERS[qIdx];
   const rv = row ? row[period + "Realisasi"] : null;
-  const hasReal = !prognosaOnly && rv !== null && rv !== undefined;
+  const hasReal = !prognosaOnly && !preferForecast && rv !== null && rv !== undefined;
   return {
     period: prognosaOnly ? null : period,
     hasReal,
@@ -4813,7 +4828,8 @@ function BisnisProsesCard({
   monthIdx,
   onSeeAll,
   titleOverride,
-  capaianRows
+  capaianRows,
+  preferForecast
 }) {
   const capById = {};
   (capaianRows || []).forEach(r => { capById[r.id] = r; });
@@ -4830,7 +4846,7 @@ function BisnisProsesCard({
     className: "divide-y divide-slate-100"
   }, rows.map((row, idx) => {
     const trend = bisnisTrendForMonth(row, monthIdx);
-    const cap = bisnisCapaianForMonth(capById[row.id], row, monthIdx);
+    const cap = bisnisCapaianForMonth(capById[row.id], row, monthIdx, preferForecast);
     const isOpen = openIdx === idx;
     return /*#__PURE__*/React.createElement("div", {
       key: row.id,
@@ -5502,6 +5518,10 @@ function BerandaPage({
   };
   // Pop-up Analisa per kartu: menampilkan Catatan Analisa & Root Cause KPI pada bulan
   // yang sedang dipilih di Beranda, dengan pintasan ke menu Analisa lengkap.
+  // Jenis titik grafik yang sedang dipilih: "realisasi" | "prognosa" | "forecast".
+  // "forecast" = garis Prognosa pada grafik -> seluruh kartu ikut menampilkan data Prognosa.
+  const [selectedSeries, setSelectedSeries] = useState("realisasi");
+  const preferForecast = selectedSeries === "forecast";
   const [analisaKpi, setAnalisaKpi] = useState(null);
   const [analisaNoteText, setAnalisaNoteText] = useState("");
   const [analisaRootCauseText, setAnalisaRootCauseText] = useState("");
@@ -5734,7 +5754,10 @@ function BerandaPage({
       // Selaraskan seluruh kartu Beranda ke tahun yang dipilih pada grafik.
       if (setYearAll) setYearAll(y);else setYear(mainMetric.catId, y);
     },
-    onActiveChange: setSelectedMonthIdx
+    onActiveChange: (idx, series) => {
+      setSelectedMonthIdx(idx);
+      if (series) setSelectedSeries(series);
+    }
   }), /*#__PURE__*/React.createElement("div", {
     key: isTopChipMain ? "side-compact" : "side-mixed",
     className: "hidden lg:flex lg:flex-col gap-3"
@@ -5756,6 +5779,7 @@ function BerandaPage({
       capaianModes: store.capaianModes,
       capaianManualValues: store.capaianManualValues,
       pemMode: getPemModeFor(id),
+      preferForecast: preferForecast,
       onAnalisa: t => openAnalisaFor(id, t),
       onClick: () => setMainMetricId(id)
     });
@@ -5773,6 +5797,7 @@ function BerandaPage({
     capaianModes: store.capaianModes,
     capaianManualValues: store.capaianManualValues,
     pemMode: getPemModeFor("nko"),
+    preferForecast: preferForecast,
     onAnalisa: t => openAnalisaFor("nko", t),
     onClick: () => setMainMetricId("nko")
   }), enabledQuickIds.filter(id => id !== "nko").map((id, idx) => {
@@ -5791,6 +5816,7 @@ function BerandaPage({
       capaianModes: store.capaianModes,
       capaianManualValues: store.capaianManualValues,
       pemMode: getPemModeFor(id),
+      preferForecast: preferForecast,
       onAnalisa: t => openAnalisaFor(id, t),
       onClick: () => setMainMetricId(id)
     });
@@ -5824,6 +5850,7 @@ function BerandaPage({
       capaianModes: store.capaianModes,
       capaianManualValues: store.capaianManualValues,
       pemMode: getPemModeFor(id),
+      preferForecast: preferForecast,
       onAnalisa: t => openAnalisaFor(id, t),
       onClick: () => setMainMetricId(id)
     });
@@ -5837,6 +5864,7 @@ function BerandaPage({
     openIdx: bisnisOpenIdx,
     setOpenIdx: setBisnisOpenIdx,
     monthIdx: selectedMonthIdx,
+    preferForecast: preferForecast,
     onSeeAll: () => {
       if (setActiveCatId) setActiveCatId("bisnis");
       if (setActiveMenu) setActiveMenu("data-input");
@@ -6807,8 +6835,12 @@ function FisikRekapTable({
   rows,
   programLabel,
   visibleCols,
-  onCell
+  onCell,
+  capaianModes,
+  capaianManualValues
 }) {
+  // %Capaian akumulasi memakai perhitungan yang sama dengan tab Capaian (computeProgramAOCapaianRows).
+  const capaianRows = computeProgramAOCapaianRows(rows, cat.id, capaianModes, capaianManualValues);
   const cellCls = "border-b border-slate-100 px-3 py-2 text-right tabular-nums text-slate-600";
   const cols = visibleCols && visibleCols.length ? visibleCols : cat.cols;
   // Kolom dasar (target/realisasi/forecast) dapat diedit manual untuk mengoreksi hasil hitungan
@@ -6830,7 +6862,10 @@ function FisikRekapTable({
   }, "Bulan/Tahun"), cols.map(c => /*#__PURE__*/React.createElement("th", {
     key: c.key,
     className: "border-b border-l border-slate-200 px-3 py-2 text-right font-medium"
-  }, c.label)))), /*#__PURE__*/React.createElement("tbody", null, rows.map((r, ridx) => /*#__PURE__*/React.createElement("tr", {
+  }, c.label)), AKUM_CAPAIAN_HEADERS.map(h => /*#__PURE__*/React.createElement("th", {
+    key: h,
+    className: "border-b border-l border-slate-200 px-3 py-2 text-right font-medium min-w-[110px]"
+  }, h)))), /*#__PURE__*/React.createElement("tbody", null, rows.map((r, ridx) => /*#__PURE__*/React.createElement("tr", {
     key: r.id,
     className: "hover:bg-slate-50/60"
   }, /*#__PURE__*/React.createElement("td", {
@@ -6843,7 +6878,7 @@ function FisikRekapTable({
   }, EDITABLE_KEYS.has(c.key) && onCell ? /*#__PURE__*/React.createElement(EditableNumberCell, {
     value: r[c.key],
     onChange: v => onCell(ridx, c.key, v)
-  }) : fmtNum(r[c.key], 0))))))), /*#__PURE__*/React.createElement("p", {
+  }) : fmtNum(r[c.key], 0))), akumCapaianCell(capaianRows[ridx] ? capaianRows[ridx].capaianRealisasi : null, "border-l"), akumCapaianCell(capaianRows[ridx] ? capaianRows[ridx].capaianPrognosa : null))))), /*#__PURE__*/React.createElement("p", {
     className: "text-[11px] text-slate-400 px-4 py-2.5 bg-slate-50/60 border-t border-slate-100"
   }, `Kolom Target/Realisasi/Prognosa dihitung otomatis dari data ${programLabel || "Program Anggaran Operasional"} dan dapat dikoreksi manual di sini. Kolom akumulasi dihitung otomatis dan tidak dapat diedit. Perubahan pada kolom "Realisasi Bulan" di tabel Program Anggaran akan menghitung ulang (refresh) nilai pada tabel ini.`));
 }
@@ -7395,6 +7430,8 @@ function AnalisaPage({
     rows: rows,
     programLabel: programAOConfig.programLabel,
     visibleCols: visibleCols,
+    capaianModes: store.capaianModes,
+    capaianManualValues: store.capaianManualValues,
     onCell: (ridx, field, value) => updateRekapCell(cat.id, year, ridx, field, value)
   })) : /*#__PURE__*/React.createElement(React.Fragment, null, visibleSubTabs.length > 1 && !((CAPAIAN_ITEM_CATS.includes(cat.id) || cat.id === "kimia" || cat.id === "lainnya" || cat.id === "bisnis") && showCapaian) && /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-2 flex-wrap"
