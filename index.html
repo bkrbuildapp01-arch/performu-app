@@ -1992,8 +1992,9 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
     // pilihan mode pada grafik (bulanan/akumulasi). Data Prognosa (Forecast) SELALU mengikuti
     // akumulasi walau mode bulanan dipilih, karena prognosa merepresentasikan proyeksi akhir
     // periode. Kategori non-akumulasi (mis. bisnis, kinerja operasi) tidak terpengaruh.
-    // Kategori tertentu (Biaya Investasi) SELALU menampilkan nilai Akumulasi Bulanan pada kartu.
-    const useAkumForRealisasi = AKUMULASI_CATS.includes(cat.id) && (pemMode === "akumulasi" || ALWAYS_AKUMULASI_CARD_CATS.includes(cat.id));
+    // Kartu mengikuti toggle Bulanan/Akumulasi Bulanan: mode "bulanan" memakai kolom Realisasi,
+    // mode "akumulasi" memakai kolom Akumulasi Realisasi pada Data Input.
+    const useAkumForRealisasi = AKUMULASI_CATS.includes(cat.id) && pemMode === "akumulasi";
     const akumRowsForValue = AKUMULASI_CATS.includes(cat.id) ? accumulateItemRows(cat, rows) : null;
     let sum = 0,
       has = false;
@@ -5049,8 +5050,6 @@ function BisnisProsesCard({
   })));
 }
 const AKUMULASI_CATS = ["pemeliharaan", "administrasi", "investasi", "kimia", "lainnya"];
-// Kategori yang kartunya SELALU menampilkan nilai Akumulasi Bulanan (mengabaikan toggle).
-const ALWAYS_AKUMULASI_CARD_CATS = ["investasi"];
 // Kategori yang garis realisasinya berhenti di bulan terakhir yang benar-benar ada datanya
 // (nilai akumulasi bulan sesudahnya hanya "carry forward", bukan data baru).
 const STOP_REALISASI_LINE_CATS = ["investasi", "pemeliharaan", "administrasi", "fisik", "prk"];
@@ -5815,7 +5814,7 @@ function BerandaPage({
         Forecast: r.akumForecast === undefined ? null : r.akumForecast
       }));
     }
-    const useAkum = isAkumChartCat(mainMetric.id) && (pemMode === "akumulasi" || ALWAYS_AKUMULASI_CARD_CATS.includes(mainMetric.id));
+    const useAkum = isAkumChartCat(mainMetric.id) && pemMode === "akumulasi";
     const base = useAkum ? accumulateChartSeries(mainSeriesBase, mainCat.decimals) : mainSeriesBase;
     // Kategori biaya: nilai akumulasi bulan tanpa data hanyalah salinan bulan sebelumnya, jadi
     // garis realisasi dihentikan di bulan terakhir yang benar-benar terisi.
