@@ -5913,8 +5913,34 @@ function BerandaPage({
   const mainCapaianPctList = useMemo(() => {
     const modes = store.capaianModes;
     const manual = store.capaianManualValues;
-    const toList = arr => arr.map(r => ({
-      realisasi: r.capaianRealisasi,
+    // Garis %Capaian Realisasi hanya digambar sampai BULAN MAKSIMUM yang benar-benar punya
+    // realisasi. Untuk kategori akumulasi, nilai akumulasi bulan berikutnya hanyalah salinan
+    // bulan sebelumnya, sehingga tanpa pembatasan ini garisnya terlihat mendatar sampai Desember
+    // seolah data sudah masuk. Garis %Capaian Prognosa tetap penuh 12 bulan.
+    const lastRealisasiIdx = () => {
+      let last = -1;
+      const cat = mainCat;
+      if (!cat || !mainRows) return last;
+      mainRows.forEach((r, i) => {
+        let has = false;
+        if (cat.type === "monthlyGrouped") {
+          const gKey = mainMetric.groupKey || (cat.groups[0] && cat.groups[0].key);
+          has = r[gKey + "Realisasi"] !== null && r[gKey + "Realisasi"] !== undefined;
+        } else if (cat.type === "monthlySimple") {
+          has = r.realisasi !== null && r.realisasi !== undefined && r.realisasi !== 0;
+        }
+        if (has) last = i;
+      });
+      if (cat.type === "itemGrouped" && cat.periods) {
+        cat.periods.forEach((p, i) => {
+          if (mainRows.some(r => r[p + "Realisasi"] !== null && r[p + "Realisasi"] !== undefined)) last = i;
+        });
+      }
+      return last;
+    };
+    const cut = lastRealisasiIdx();
+    const toList = arr => arr.map((r, i) => ({
+      realisasi: cut >= 0 && i > cut ? null : r.capaianRealisasi,
       prognosa: r.capaianPrognosa
     }));
     try {
@@ -5930,8 +5956,8 @@ function BerandaPage({
       if (mainCat.type === "monthlyGrouped") {
         const gKey = mainMetric.groupKey || (mainCat.groups[0] && mainCat.groups[0].key);
         const rowsCap = computeCapaianRows(mainCat, mainRows, modes, manual);
-        return rowsCap.map(r => ({
-          realisasi: r[gKey + "CapaianRealisasi"],
+        return rowsCap.map((r, i) => ({
+          realisasi: cut >= 0 && i > cut ? null : r[gKey + "CapaianRealisasi"],
           prognosa: r[gKey + "CapaianPrognosa"]
         }));
       }
@@ -8534,10 +8560,12 @@ function PaparanLineChart({ series, x, y, w, h, decimals, title, unit, compact, 
   const yMax = rawMax + pad;
   const labels = series[0] && series[0].labels ? series[0].labels : MONTHS;
   const n = labels.length;
-  const padL = compact ? 42 : 52;
+  const padL = compact ? 46 : 56;
   const padR = 10;
-  const padT = title ? (compact ? 22 : 28) : 8;
-  const padB = compact ? 20 : 26;
+  // Ruang atas menampung judul + legenda; ruang bawah khusus label bulan, supaya keduanya
+  // tidak saling menimpa (sebelumnya legenda digambar di bawah dan bertabrakan dgn label bulan).
+  const padT = (title ? (compact ? 16 : 20) : 4) + (compact ? 13 : 16);
+  const padB = compact ? 18 : 24;
   const innerW = Math.max(10, w - padL - padR);
   const innerH = Math.max(10, h - padT - padB);
   const xAt = i => x + padL + (n <= 1 ? innerW / 2 : innerW * i / (n - 1));
@@ -8545,15 +8573,21 @@ function PaparanLineChart({ series, x, y, w, h, decimals, title, unit, compact, 
   const fsAxis = compact ? 7.5 : 9;
   const ticks = 4;
   const els = [];
-  if (title) els.push(E("text", { key: "t", x: x + padL, y: y + (compact ? 12 : 16), fontSize: compact ? 10.5 : 13, fontWeight: "700", fill: "#0F2A3F" }, title));
+  if (title) els.push(E("text", { key: "t", x: x + padL, y: y + (compact ? 11 : 14), fontSize: compact ? 10.5 : 13, fontWeight: "700", fill: "#0F2A3F" }, title));
+  if (unit) els.push(E("text", { key: "u", x: x + w - padR, y: y + (compact ? 11 : 14), textAnchor: "end", fontSize: compact ? 7.5 : 9, fill: "#94a3b8" }, unit));
   for (let k = 0; k <= ticks; k++) {
     const v = yMin + (yMax - yMin) * k / ticks;
     els.push(E("line", { key: "g" + k, x1: x + padL, y1: yAt(v), x2: x + padL + innerW, y2: yAt(v), stroke: "#e2e8f0", strokeWidth: 1 }));
     els.push(E("text", { key: "gl" + k, x: x + padL - 5, y: yAt(v) + 3, textAnchor: "end", fontSize: fsAxis, fill: "#94a3b8" }, fmtNum(roundByDecimals(v, decimals), decimals)));
   }
+  // Tampilkan label bulan seperlunya: kalau ruang per label kurang dari lebar teksnya,
+  // sebagian dilewati agar tidak bertumpuk.
+  const slotW = n > 1 ? innerW / (n - 1) : innerW;
+  const needW = 3 * fsAxis * 0.62 + 4;
+  const step = Math.max(1, Math.ceil(needW / Math.max(1, slotW)));
   labels.forEach((lb, i) => {
-    if (compact && n > 6 && i % 2 === 1) return;
-    els.push(E("text", { key: "x" + i, x: xAt(i), y: y + padT + innerH + (compact ? 12 : 16), textAnchor: "middle", fontSize: fsAxis, fill: "#64748b" }, lb));
+    if (i % step !== 0 && i !== n - 1) return;
+    els.push(E("text", { key: "x" + i, x: xAt(i), y: y + padT + innerH + (compact ? 12 : 15), textAnchor: "middle", fontSize: fsAxis, fill: "#64748b" }, lb));
   });
   series.forEach((s, si) => {
     const pts = (s.data || []).map((v, i) => v === null || v === undefined ? null : `${xAt(i)},${yAt(v)}`).filter(Boolean).join(" ");
@@ -8583,8 +8617,8 @@ function PaparanLineChart({ series, x, y, w, h, decimals, title, unit, compact, 
     const bw = compact ? 96 : 138;
     const lh = compact ? 11 : 14;
     const bh = stats.length * lh + (compact ? 8 : 10);
-    const bx = x + w - padR - bw;
-    const by = y + padT + 2;
+    const bx = x + w - padR - bw - 2;
+    const by = y + padT + 4;
     els.push(E("rect", { key: "sb", x: bx, y: by, width: bw, height: bh, rx: 4, fill: "#ffffff", stroke: "#e2e8f0", strokeWidth: 1, opacity: 0.95 }));
     stats.forEach((st, i) => {
       els.push(E("text", { key: "sl" + i, x: bx + 6, y: by + (compact ? 11 : 14) + i * lh, fontSize: compact ? 7.5 : 9.5, fill: "#64748b" }, st.label));
@@ -8592,15 +8626,16 @@ function PaparanLineChart({ series, x, y, w, h, decimals, title, unit, compact, 
     });
   }
   if (!hasData) els.push(E("text", { key: "nd", x: x + w / 2, y: y + h / 2, textAnchor: "middle", fontSize: 11, fill: "#cbd5e1" }, "Belum ada data"));
-  // legenda
+  // Legenda di atas area plot (di bawah judul), jarak antar item dihitung dari panjang teks
+  // sehingga tidak saling menumpuk.
+  const fsLeg = compact ? 7.5 : 9;
   let lx = x + padL;
-  const ly = y + h - (compact ? 4 : 6);
-  series.forEach((s, si) => {
-    els.push(E("line", { key: "ll" + si, x1: lx, y1: ly - 3, x2: lx + 14, y2: ly - 3, stroke: s.color, strokeWidth: 2.2, strokeDasharray: s.dash || undefined }));
-    els.push(E("text", { key: "lt" + si, x: lx + 18, y: ly, fontSize: compact ? 7.5 : 9, fill: "#64748b" }, s.label));
-    lx += 22 + (s.label.length * (compact ? 4 : 4.8));
+  const ly = y + padT - (compact ? 4 : 5);
+  series.forEach((sr, si) => {
+    els.push(E("line", { key: "ll" + si, x1: lx, y1: ly - 3, x2: lx + 12, y2: ly - 3, stroke: sr.color, strokeWidth: 2.2, strokeDasharray: sr.dash || undefined }));
+    els.push(E("text", { key: "lt" + si, x: lx + 16, y: ly, fontSize: fsLeg, fill: "#64748b" }, sr.label));
+    lx += 22 + sr.label.length * fsLeg * 0.56;
   });
-  if (unit) els.push(E("text", { key: "u", x: x + padL, y: y + padT - 4, fontSize: fsAxis, fill: "#94a3b8" }, unit));
   return E("g", null, els);
 }
 
@@ -8929,12 +8964,26 @@ function PaparanTab({ store, nkoState, year, monthIdx, readOnly }) {
   const [notes, setNotes] = useState(() => loadPaparanNotes());
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
+  const [fullscreen, setFullscreen] = useState(false);
   const svgRefs = useRef({});
+  // Navigasi keyboard saat mode Tampilan (panah kiri/kanan, Esc untuk keluar).
+  useEffect(() => {
+    if (!fullscreen) return undefined;
+    function onKey(e) {
+      if (e.key === "Escape") setFullscreen(false);
+      else if (e.key === "ArrowRight" || e.key === "PageDown") setIdx(i => Math.min(slidesLenRef.current - 1, i + 1));
+      else if (e.key === "ArrowLeft" || e.key === "PageUp") setIdx(i => Math.max(0, i - 1));
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
+  const slidesLenRef = useRef(0);
   const slides = useMemo(() => buildPaparanSlides(store, nkoState, year, monthIdx), [store, nkoState, year, monthIdx]);
   useEffect(() => {
     if (idx >= slides.length) setIdx(0);
   }, [slides.length, idx]);
   const cur = slides[idx] || slides[0];
+  slidesLenRef.current = slides.length;
   const noteKey = cur ? paparanNoteKey(year, monthIdx, cur.id) : null;
   const noteVal = noteKey ? notes[noteKey] || "" : "";
   const setNote = v => {
@@ -9008,10 +9057,16 @@ function PaparanTab({ store, nkoState, year, monthIdx, readOnly }) {
       E("div", null,
         E("p", { className: "text-sm font-bold text-slate-800" }, "Paparan Laporan Kinerja Unit"),
         E("p", { className: "text-xs text-slate-400 mt-0.5" }, `${slides.length} slide — ${monthIdx === null || monthIdx === undefined ? "seluruh tahun " + year : MONTHS_FULL[monthIdx] + " " + year}. Tambahkan catatan pada tiap slide, lalu unduh sebagai PDF.`)),
-      E("button", {
-        type: "button", onClick: exportPdf, disabled: exporting,
-        className: "px-4 py-2 rounded-full text-sm font-semibold bg-[#0F2A3F] text-white hover:bg-[#16374f] transition flex items-center gap-1.5 disabled:opacity-50"
-      }, E(Icon, { name: "download", size: 14 }), exporting ? " Menyiapkan PDF..." : " Unduh PDF")),
+      E("div", { className: "flex items-center gap-2" },
+        E("button", {
+          type: "button", onClick: () => setFullscreen(true),
+          title: "Tampilkan paparan layar penuh (panah kiri/kanan untuk berpindah slide, Esc untuk keluar)",
+          className: "px-4 py-2 rounded-full text-sm font-semibold bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 transition flex items-center gap-1.5"
+        }, E(Icon, { name: "maximize", size: 14 }), " Tampilan"),
+        E("button", {
+          type: "button", onClick: exportPdf, disabled: exporting,
+          className: "px-4 py-2 rounded-full text-sm font-semibold bg-[#0F2A3F] text-white hover:bg-[#16374f] transition flex items-center gap-1.5 disabled:opacity-50"
+        }, E(Icon, { name: "download", size: 14 }), exporting ? " Menyiapkan PDF..." : " Unduh PDF"))),
     error && E("p", { className: "text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-3 py-2" }, error),
     E("div", { className: "flex gap-4 flex-col lg:flex-row" },
       // daftar slide
@@ -9044,7 +9099,39 @@ function PaparanTab({ store, nkoState, year, monthIdx, readOnly }) {
           E("p", { className: "text-[11px] text-slate-400 mt-1" }, "Catatan langsung muncul pada pratinjau di atas dan ikut tercetak di PDF.")))),
     // slide tersembunyi untuk keperluan ekspor
     E("div", { style: { position: "absolute", left: "-99999px", top: 0, width: PAPARAN_W } },
-      slides.map(sl => sl.id === (cur && cur.id) ? null : svgOf(sl, "hid-" + sl.id)))
+      slides.map(sl => sl.id === (cur && cur.id) ? null : svgOf(sl, "hid-" + sl.id))),
+    // --- Mode Tampilan (layar penuh) ---
+    fullscreen && cur && E("div", { className: "fixed inset-0 z-50 bg-slate-900 flex flex-col" },
+      E("div", { className: "flex items-center justify-between gap-3 px-5 py-3 flex-shrink-0" },
+        E("div", { className: "min-w-0" },
+          E("p", { className: "text-sm font-bold text-white truncate" }, cur.title),
+          E("p", { className: "text-[11px] text-slate-400" }, `Slide ${idx + 1} dari ${slides.length}`)),
+        E("div", { className: "flex items-center gap-2 flex-shrink-0" },
+          E("button", {
+            type: "button", onClick: exportPdf, disabled: exporting,
+            title: "Unduh seluruh slide sebagai PDF",
+            className: "px-4 py-2 rounded-full text-xs font-semibold bg-white/10 text-white hover:bg-white/20 transition flex items-center gap-1.5 disabled:opacity-50"
+          }, E(Icon, { name: "download", size: 14 }), exporting ? " Menyiapkan..." : " Unduh PDF"),
+          E("button", {
+            type: "button", onClick: () => setFullscreen(false), "aria-label": "Tutup tampilan",
+            className: "w-9 h-9 rounded-full bg-white/10 text-white hover:bg-white/20 flex items-center justify-center transition"
+          }, E(Icon, { name: "x", size: 16 })))),
+      E("div", { className: "flex-1 min-h-0 flex items-center justify-center px-5 pb-3" },
+        E("div", { className: "w-full max-w-[1400px] max-h-full", style: { aspectRatio: `${PAPARAN_W} / ${PAPARAN_H}` } },
+          E("div", { className: "w-full h-full rounded-xl overflow-hidden bg-white shadow-2xl" }, svgOf(cur, "fs")))),
+      E("div", { className: "flex items-center justify-center gap-3 px-5 pb-4 flex-shrink-0" },
+        E("button", {
+          type: "button", onClick: () => setIdx(i => Math.max(0, i - 1)), disabled: idx === 0,
+          className: "px-4 py-2 rounded-full text-xs font-semibold bg-white/10 text-white hover:bg-white/20 disabled:opacity-30"
+        }, "\u2190 Sebelumnya"),
+        E("div", { className: "flex items-center gap-1.5" }, slides.map((sl, i) => E("button", {
+          key: sl.id, type: "button", onClick: () => setIdx(i), "aria-label": `Slide ${i + 1}`,
+          className: `rounded-full transition-all ${i === idx ? "w-5 h-1.5 bg-white" : "w-1.5 h-1.5 bg-white/40 hover:bg-white/70"}`
+        }))),
+        E("button", {
+          type: "button", onClick: () => setIdx(i => Math.min(slides.length - 1, i + 1)), disabled: idx >= slides.length - 1,
+          className: "px-4 py-2 rounded-full text-xs font-semibold bg-white/10 text-white hover:bg-white/20 disabled:opacity-30"
+        }, "Berikutnya \u2192")))
   );
 }
 
