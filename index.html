@@ -2233,6 +2233,49 @@ function TrendBadge({
     decimals: 1
   }), "%");
 }
+// ---------------------------------------------------------------------------
+// Sumber data kartu KPI. Dipakai bersama oleh Beranda dan menu Analisa supaya angka pada
+// kedua halaman selalu identik (dulu Analisa memanggil computeTrendAtIndex tanpa mode capaian
+// dan tanpa pemMode, sehingga badge memakai polarisasi Normal dan nilainya bulanan).
+//
+// Biaya Kimia dan Pelumas ditampilkan sebagai baris KPI pada tab Akumulasi, jadi butuh
+// kategori & baris sintetis tersendiri.
+const KARTU_PEM_MODE = "akumulasi";
+function kimiaKpiCatOf(baseCat) {
+  if (!baseCat) return null;
+  return {
+    ...baseCat,
+    type: "monthlySimple",
+    akhirPeriodeMode: "last",
+    decimals: 4,
+    cols: [{ key: "target", label: "Target" }, { key: "realisasi", label: "Realisasi" }, { key: "forecast", label: "Prognosa" }]
+  };
+}
+function kimiaKpiRowsOf(store, year) {
+  const baseCat = CATEGORIES.find(c => c.id === "kimia");
+  if (!baseCat || !store || !store.kimia) return [];
+  const src = (store.kimia.byYear && store.kimia.byYear[year]) || [];
+  const targets = store.kimiaKpiTargets && store.kimiaKpiTargets[year] ? store.kimiaKpiTargets[year] : {};
+  return computeKimiaKpiRow(baseCat, year, src, targets).map((m, i) => ({
+    id: `${year}-kimiakpi-${i}`,
+    bulan: m.bulan,
+    target: m.target,
+    realisasi: m.realisasi,
+    forecast: m.prognosa
+  }));
+}
+function kartuCatFor(metric) {
+  if (!metric) return null;
+  if (metric.id === "kimia") return kimiaKpiCatOf(CATEGORIES.find(c => c.id === "kimia")) || metric.cat;
+  return metric.cat;
+}
+function kartuRowsFor(store, metric, year, nkoState) {
+  if (!metric) return [];
+  if (metric.catId === "nko") return nkoState ? nkoComputeMonthlyRows(nkoState, store, year) : [];
+  if (metric.id === "kimia") return kimiaKpiRowsOf(store, year);
+  const cs = store[metric.catId];
+  return (cs && cs.byYear && cs.byYear[year]) || [];
+}
 function CapaianBadge({
   trend,
   style
@@ -4388,7 +4431,7 @@ function ItemGroupedTable({
     onDeleteRow
   });
 
-  const showPercentCols = cat.id === "bisnis";
+  const showPercentCols = cat.id === "bisnis" || cat.id === "lainnya";
   const colSpanPerPeriod = showPercentCols ? 5 : 3;
   const periods = visiblePeriods && visiblePeriods.length ? visiblePeriods : cat.periods;
 
@@ -5091,7 +5134,9 @@ function BisnisProsesCard({
     }, capById[row.id] && capById[row.id][q + "CapaianRealisasi"] !== null && capById[row.id][q + "CapaianRealisasi"] !== undefined ? `${fmtNum(capById[row.id][q + "CapaianRealisasi"], 1)}%` : "-"))))));
   })));
 }
-const AKUMULASI_CATS = ["pemeliharaan", "administrasi", "investasi", "kimia", "lainnya"];
+// Kinerja Unit Lainnya TIDAK memakai akumulasi: tiap baris adalah KPI berdiri sendiri
+// (persentase/indeks), sehingga menjumlahkannya antar bulan tidak bermakna.
+const AKUMULASI_CATS = ["pemeliharaan", "administrasi", "investasi", "kimia"];
 // Kategori yang garis realisasinya berhenti di bulan terakhir yang benar-benar ada datanya
 // (nilai akumulasi bulan sesudahnya hanya "carry forward", bukan data baru).
 const STOP_REALISASI_LINE_CATS = ["investasi", "pemeliharaan", "administrasi", "fisik", "prk"];
@@ -5780,6 +5825,32 @@ function BerandaPage({
   }, [lainnyaRows, lainnyaYear, selectedMonthIdx]);
   const lainnyaCat = CATEGORIES.find(c => c.id === "lainnya");
   const lainnyaUnit = lainnyaCat ? lainnyaCat.unit || "" : "";
+  // %Capaian tiap baris Kinerja Unit Lainnya — memakai perhitungan yang sama dengan tab Capaian
+  // pada Data Input (mode capaian diatur per baris), sehingga polarisasi ikut dihormati.
+  const lainnyaCapaianRows = useMemo(() => {
+    if (!lainnyaCat) return [];
+    try {
+      return computeLainnyaCapaianItemRows(lainnyaCat, selectedYears.lainnya, lainnyaRows, store.capaianModes, store.capaianManualValues);
+    } catch (e) {
+      return [];
+    }
+  }, [lainnyaCat, lainnyaRows, selectedYears.lainnya, store.capaianModes, store.capaianManualValues]);
+  const lainnyaCapaianOf = row => {
+    const cap = lainnyaCapaianRows.find(r => r.id === row.id);
+    if (!cap) return null;
+    const idx = selectedMonthIdx === null || selectedMonthIdx === undefined ? (() => {
+      for (let k = MONTHS.length - 1; k >= 0; k--) {
+        if (row[MONTHS[k] + "Realisasi"] !== null && row[MONTHS[k] + "Realisasi"] !== undefined) return k;
+      }
+      return -1;
+    })() : selectedMonthIdx;
+    if (idx < 0) return null;
+    const p = MONTHS[idx];
+    const v = cap[p + "CapaianRealisasi"];
+    const f = cap[p + "CapaianPrognosa"];
+    const out = v === null || v === undefined ? f : v;
+    return out === null || out === undefined ? null : round1(out);
+  };
   const activeLainnyaRow = mainMetricId === "lainnya-item" ? lainnyaRows.find(r => r.id === lainnyaActiveId) : null;
   const mainMetric = activeLainnyaRow ? {
     ...ALL_METRICS.lainnya,
@@ -5791,26 +5862,8 @@ function BerandaPage({
   // "Biaya Kimia dan Pelumas" > sub-tab Akumulasi (rasio Pelumas/Produksi terhadap target
   // KPI yang diisi manual), bukan penjumlahan item Pelumas + Produksi.
   const kimiaBaseCat = CATEGORIES.find(c => c.id === "kimia");
-  const kimiaKpiCat = useMemo(() => kimiaBaseCat ? {
-    ...kimiaBaseCat,
-    type: "monthlySimple",
-    akhirPeriodeMode: "last",
-    decimals: 4,
-    cols: [{ key: "target", label: "Target" }, { key: "realisasi", label: "Realisasi" }, { key: "forecast", label: "Prognosa" }]
-  } : null, [kimiaBaseCat]);
-  const kimiaKpiRows = useMemo(() => {
-    if (!kimiaBaseCat || !store.kimia) return [];
-    const y = selectedYears.kimia;
-    const src = store.kimia.byYear[y] || [];
-    const targets = store.kimiaKpiTargets && store.kimiaKpiTargets[y] ? store.kimiaKpiTargets[y] : {};
-    return computeKimiaKpiRow(kimiaBaseCat, y, src, targets).map((m, i) => ({
-      id: `${y}-kimiakpi-${i}`,
-      bulan: m.bulan,
-      target: m.target,
-      realisasi: m.realisasi,
-      forecast: m.prognosa
-    }));
-  }, [store.kimia, store.kimiaKpiTargets, selectedYears.kimia, kimiaBaseCat]);
+  const kimiaKpiCat = useMemo(() => kimiaKpiCatOf(kimiaBaseCat), [kimiaBaseCat]);
+  const kimiaKpiRows = useMemo(() => kimiaKpiRowsOf(store, selectedYears.kimia), [store.kimia, store.kimiaKpiTargets, selectedYears.kimia]);
   const metricCatFor = m => m && m.id === "kimia" && kimiaKpiCat ? kimiaKpiCat : m ? m.cat : null;
   // Kimia dikecualikan dari toggle Bulanan/Akumulasi karena baris KPI-nya sudah berbasis akumulasi.
   const isAkumChartCat = id => AKUMULASI_CATS.includes(id) && id !== "kimia";
@@ -5944,7 +5997,15 @@ function BerandaPage({
       prognosa: r.capaianPrognosa
     }));
     try {
-      if (activeLainnyaRow) return null;
+      if (activeLainnyaRow) {
+        // Grafik satu baris Kinerja Unit Lainnya: garis %capaian memakai mode capaian baris tsb.
+        const cap = lainnyaCapaianRows.find(r => r.id === activeLainnyaRow.id);
+        if (!cap) return null;
+        return MONTHS.map((p, i) => ({
+          realisasi: cut >= 0 && i > cut ? null : cap[p + "CapaianRealisasi"],
+          prognosa: cap[p + "CapaianPrognosa"]
+        }));
+      }
       const id = mainMetric.id;
       if (id === "kimia") {
         const y = selectedYears.kimia;
@@ -6157,13 +6218,15 @@ function BerandaPage({
       className: `inline-flex items-center gap-1.5 text-xs font-medium pl-3 pr-2.5 py-1.5 rounded-full transition cursor-pointer ${isActive ? "bg-pink-600 text-white shadow-[0_1px_2px_rgba(15,23,42,0.15)]" : "bg-white text-slate-600 shadow-[0_1px_2px_rgba(15,23,42,0.06)] hover:bg-pink-50"}`
     }, /*#__PURE__*/React.createElement("span", {
       className: `font-semibold ${isActive ? "text-white" : "text-slate-700"}`
-    }, row.label), trend ? /*#__PURE__*/React.createElement("span", {
-      className: `inline-flex items-center gap-0.5 font-semibold ${isActive ? "text-white" : trend.up ? "text-emerald-600" : "text-rose-600"}`
-    }, /*#__PURE__*/React.createElement(Icon, {
-      name: trend.up ? "trending-up" : "trending-down",
-      size: 10,
-      strokeWidth: 2.5
-    }), fmtNum(trend.value, 1), lainnyaUnit) : /*#__PURE__*/React.createElement("span", {
+    }, row.label), trend ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+      className: `font-semibold tabular-nums ${isActive ? "text-white" : "text-slate-700"}`
+    }, fmtNum(trend.value, 1), lainnyaUnit),
+    // Badge memakai %CAPAIAN terhadap target (hijau bila >= 100%), sama seperti kartu KPI
+    // lain di Beranda — bukan lagi arah naik/turun terhadap bulan sebelumnya.
+    lainnyaCapaianOf(row) === null ? null : /*#__PURE__*/React.createElement("span", {
+      title: "% capaian terhadap target pada periode ini",
+      className: `inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${isActive ? "bg-white/20 text-white" : lainnyaCapaianOf(row) >= 100 ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"}`
+    }, fmtNum(lainnyaCapaianOf(row), 1), "%")) : /*#__PURE__*/React.createElement("span", {
       className: isActive ? "text-white/80" : "text-slate-400"
     }, "-"));
   })));
@@ -10704,6 +10767,7 @@ function SimpleRowInsightCard({
 
 function AnalisaInsightPage({
   store,
+  nkoState,
   selectedYears,
   setYear,
   uiConfig,
@@ -10839,8 +10903,11 @@ function AnalisaInsightPage({
   }, mainCardIds.map((id, idx) => {
     const m = getMetric(id);
     if (!m) return null;
-    const rows = store[m.catId].byYear[year] || store[m.catId].byYear[selectedYears[m.catId]];
-    const trend = computeTrendAtIndex(m.cat, rows, m.groupKey, monthIdx);
+    // Pakai sumber & parameter yang SAMA dengan kartu Beranda: kategori sintetis untuk Kimia,
+    // mode capaian (polarisasi) dari store, dan mode Akumulasi.
+    const cardCat = kartuCatFor(m);
+    const rows = kartuRowsFor(store, m, year, nkoState);
+    const trend = computeTrendAtIndex(cardCat, rows, m.groupKey, monthIdx, store.capaianModes, store.capaianManualValues, KARTU_PEM_MODE);
     const noteKey = noteKeyFor(id, trend && trend.monthLabel, year);
     return /*#__PURE__*/React.createElement("div", {
       key: id,
@@ -10852,9 +10919,9 @@ function AnalisaInsightPage({
       icon: m.icon,
       color: m.color,
       trend: trend,
-      unit: m.cat.unit || "",
-      decimals: m.cat.decimals,
-      cat: m.cat,
+      unit: cardCat.unit || "",
+      decimals: cardCat.decimals,
+      cat: cardCat,
       catId: m.catId,
       store: store,
       year: year,
@@ -11637,6 +11704,7 @@ function PerformUApp() {
     nkoState: nkoState
   }), effectiveMenu === "analisa" && /*#__PURE__*/React.createElement(AnalisaInsightPage, {
     store: store,
+    nkoState: nkoState,
     selectedYears: selectedYears,
     setYear: setYear,
     uiConfig: uiConfig,
