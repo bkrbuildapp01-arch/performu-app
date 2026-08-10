@@ -9027,37 +9027,44 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
   // Triwulan yang sesuai dengan bulan terpilih (mengikuti pemetaan pada kartu Beranda).
   const qInfo = bisnisQuarterForMonth(monthIdx === null || monthIdx === undefined ? 11 : monthIdx);
   const qKey = QUARTERS[qInfo.qIdx === null || qInfo.qIdx === undefined ? 0 : qInfo.qIdx];
-  const bisnisAkum = bisnisCat ? accumulateItemRows(bisnisCat, bisnisRows) : [];
   const bd = bisnisCat ? bisnisCat.decimals : 1;
+  // Nilai diambil APA ADANYA dari tabel Data Input pada periode terpilih (tidak diakumulasi),
+  // dan %capaian dihitung dari nilai yang sama agar satu baris konsisten.
+  const rawCapaian = (cat, row, period, target, realisasi, prognosa) => {
+    const modeKey = itemCapaianModeKey(cat, row.label || row.id);
+    const mode = getCapaianMode(store.capaianModes, modeKey);
+    return resolveCapaianPair(mode, store.capaianManualValues, modeKey, period, realisasi, prognosa, target);
+  };
+  const pctTxt = v => v === null || v === undefined ? "-" : `${fmtNum(round1(v), 1)}%`;
   slides.push({
     id: "bisnis", title: `Rekap Kinerja Bisnis Proses — ${qKey} ${year}`, kind: "table",
     columns: ["Uraian", "Target", "Realisasi", "Prognosa", "%Realisasi", "%Prognosa"],
-    rows: bisnisCap.map((r, i) => {
-      const lv = bisnisAkum[i] || {};
-      return [r.label || "-",
-        fmtNum(lv[qKey + "Prognosa"], bd), fmtNum(lv[qKey + "Realisasi"], bd), fmtNum(lv[qKey + "Forecast"], bd),
-        r[qKey + "CapaianRealisasi"] === null || r[qKey + "CapaianRealisasi"] === undefined ? "-" : `${fmtNum(r[qKey + "CapaianRealisasi"], 1)}%`,
-        r[qKey + "CapaianPrognosa"] === null || r[qKey + "CapaianPrognosa"] === undefined ? "-" : `${fmtNum(r[qKey + "CapaianPrognosa"], 1)}%`];
+    rows: bisnisRows.map(row => {
+      const t = row[qKey + "Prognosa"];
+      const rl = row[qKey + "Realisasi"];
+      const pg = row[qKey + "Forecast"];
+      const pair = bisnisCat ? rawCapaian(bisnisCat, row, qKey, t, rl, pg) : {};
+      return [row.label || "-", fmtNum(t, bd), fmtNum(rl, bd), fmtNum(pg, bd),
+        pctTxt(pair.capaianRealisasi), pctTxt(pair.capaianPrognosa)];
     })
   });
 
   // 8. Rekap Kinerja Unit Lainnya (bulan terpilih)
   const lainnyaCat = catById("lainnya");
   const lainnyaRows = rowsOf("lainnya");
-  let lainnyaCap = [];
-  try { lainnyaCap = computeLainnyaCapaianItemRows(lainnyaCat, year, lainnyaRows, store.capaianModes, store.capaianManualValues); } catch (e) {}
   const pKey = MONTHS[cutIdx];
-  const lainnyaAkum = lainnyaCat ? accumulateItemRows(lainnyaCat, lainnyaRows) : [];
+  // Sama seperti Bisnis Proses: nilai apa adanya dari tabel Data Input bulan terpilih.
   slides.push({
     id: "lainnya", title: `Rekap Kinerja Unit Lainnya${monthFull ? " — " + monthFull : ""}`, kind: "table",
     columns: ["Uraian", "Target", "Realisasi", "Prognosa", "% Capaian Realisasi", "% Capaian Prognosa"],
-    rows: lainnyaAkum.map((r, i) => {
-      const cap = lainnyaCap[i] || {};
-      const d = lainnyaCat.decimals;
-      return [r.label || "-",
-        fmtNum(r[pKey + "Prognosa"], d), fmtNum(r[pKey + "Realisasi"], d), fmtNum(r[pKey + "Forecast"], d),
-        cap[pKey + "CapaianRealisasi"] === null || cap[pKey + "CapaianRealisasi"] === undefined ? "-" : `${fmtNum(cap[pKey + "CapaianRealisasi"], 1)}%`,
-        cap[pKey + "CapaianPrognosa"] === null || cap[pKey + "CapaianPrognosa"] === undefined ? "-" : `${fmtNum(cap[pKey + "CapaianPrognosa"], 1)}%`];
+    rows: lainnyaRows.map(row => {
+      const d = lainnyaCat ? lainnyaCat.decimals : 1;
+      const t = row[pKey + "Prognosa"];
+      const rl = row[pKey + "Realisasi"];
+      const pg = row[pKey + "Forecast"];
+      const pair = lainnyaCat ? rawCapaian(lainnyaCat, row, pKey, t, rl, pg) : {};
+      return [row.label || "-", fmtNum(t, d), fmtNum(rl, d), fmtNum(pg, d),
+        pctTxt(pair.capaianRealisasi), pctTxt(pair.capaianPrognosa)];
     })
   });
   slides.push({ id: "penutup", title: "Terima Kasih", kind: "closing", subtitle: monthFull ? `Laporan Kinerja Unit — ${monthFull} ${year}` : `Laporan Kinerja Unit — ${year}` });
@@ -9286,8 +9293,10 @@ function buildPaparanSlidePrompt(slide, year, monthIdx, companyName) {
   const lines = [];
   const periode = monthIdx === null || monthIdx === undefined ? `tahun ${year}` : `${MONTHS_FULL[monthIdx]} ${year}`;
   lines.push(`Anda adalah analis kinerja pembangkit listrik di ${companyName || DEFAULT_COMPANY_NAME}.`);
-  lines.push(`Tuliskan narasi singkat (maksimal 3 kalimat, bahasa Indonesia formal) untuk slide paparan berikut. Narasi akan dicetak langsung pada slide, jadi tulis mengalir tanpa judul, tanpa poin-poin, dan tanpa basa-basi pembuka.`);
-  lines.push(`Sebutkan angka pendukung dari data di bawah. Untuk KPI, nilai baiknya diukur dari %capaian terhadap target (>=100% berarti tercapai), bukan dari naik/turunnya nilai mentah. Jangan mengarang angka yang tidak ada.`);
+  lines.push(`Tuliskan SATU kalimat kesimpulan yang padat untuk slide paparan berikut. Maksimal 25 kata, boleh dipecah jadi dua kalimat pendek bila perlu.`);
+  lines.push(`Aturan penulisan: langsung ke intinya, gaya butir paparan (bukan narasi/esai). Tanpa kata pembuka seperti "Berdasarkan data", "Secara umum", atau "Dapat disimpulkan". Tanpa judul, tanpa poin bernomor, tanpa penutup.`);
+  lines.push(`Sebut maksimal 2 angka kunci dari data di bawah (mis. %capaian atau nilai terpenting). Untuk KPI, baik/tidaknya diukur dari %capaian terhadap target (>=100% berarti tercapai), bukan dari naik/turunnya nilai mentah. Jangan mengarang angka yang tidak ada.`);
+  lines.push(`Contoh gaya yang diinginkan: "NKO Juni 103,05 (103,1% dari target), didorong EAF 101,6%; EFOR masih 99,5% dan perlu perhatian."`);
   lines.push("");
   lines.push(`Slide: ${slide.title}`);
   lines.push(`Periode: ${periode}`);
@@ -9309,7 +9318,7 @@ function buildPaparanSlidePrompt(slide, year, monthIdx, companyName) {
     if (rows.length > 25) lines.push(`    ...dan ${rows.length - 25} baris lainnya`);
   }
   if (slide.kind === "title" || slide.kind === "closing") {
-    lines.push("Slide ini hanya halaman pembuka/penutup — cukup tulis kalimat pengantar atau penutup yang ringkas dan profesional.");
+    lines.push("Slide ini hanya halaman pembuka/penutup — cukup satu kalimat pengantar atau penutup yang singkat dan profesional (maksimal 15 kata).");
   }
   return lines.join("\n");
 }
