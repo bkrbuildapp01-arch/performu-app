@@ -5215,7 +5215,7 @@ const UI_CONFIG_STORAGE_KEY = "performu_ui_tab_table_config_v1";
 const DEFAULT_COMPANY_NAME = "PT PLN NP Unit Pembangkitan Brantas";
 // Kategori yang angkanya ditampilkan dengan MINIMAL 2 desimal (Beranda, Analisa, Paparan).
 // Kalau data aslinya memang lebih rinci, jumlah desimal aslinya yang dipakai.
-const MIN_2_DECIMAL_CATS = ["lainnya"];
+const MIN_2_DECIMAL_CATS = ["lainnya", "bisnis"];
 function displayDecimalsFor(catId, decimals) {
   const d = decimals === null || decimals === undefined ? 1 : decimals;
   return MIN_2_DECIMAL_CATS.includes(catId) ? Math.max(2, d) : d;
@@ -5588,7 +5588,7 @@ function collectRedKpis(store, selectedYears, monthIdx) {
         icon: "workflow",
         color: "teal",
         unit: bisnisCat.unit || "",
-        decimals: bisnisCat.decimals,
+        decimals: displayDecimalsFor("bisnis", bisnisCat.decimals),
         latest: t.value,
         target: t.prognosa,
         capaianPct,
@@ -9034,7 +9034,7 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
   // Triwulan yang sesuai dengan bulan terpilih (mengikuti pemetaan pada kartu Beranda).
   const qInfo = bisnisQuarterForMonth(monthIdx === null || monthIdx === undefined ? 11 : monthIdx);
   const qKey = QUARTERS[qInfo.qIdx === null || qInfo.qIdx === undefined ? 0 : qInfo.qIdx];
-  const bd = bisnisCat ? bisnisCat.decimals : 1;
+  const bd = displayDecimalsFor("bisnis", bisnisCat ? bisnisCat.decimals : 1);
   // Nilai diambil APA ADANYA dari tabel Data Input pada periode terpilih (tidak diakumulasi),
   // dan %capaian dihitung dari nilai yang sama agar satu baris konsisten.
   const rawCapaian = (cat, row, period, target, realisasi, prognosa) => {
@@ -11397,7 +11397,7 @@ function AnalisaInsightPage({
       periods: QUARTERS,
       unit: unitFor("bisnis", row.label, bisnisCat.unit),
       capaianPct: bisnisCap[row.id],
-      decimals: bisnisCat.decimals,
+      decimals: displayDecimalsFor("bisnis", bisnisCat.decimals),
       color: "teal",
       icon: "workflow",
       monthIdx: bisnisQIdx,
