@@ -8802,11 +8802,19 @@ function PaparanLineChart({ series, x, y, w, h, decimals, title, unit, compact, 
 // --- Penyusun data tiap slide ----------------------------------------------
 // Nilai ringkas pada grafik: Target & Realisasi bulan terpilih, plus Prognosa Akhir Periode
 // (nilai prognosa pada bulan terakhir semester berjalan — sama seperti kartu Beranda).
-function paparanStats(series, idx, decimals, unit, capaian) {
+function paparanStats(series, idx, decimals, unit, capaian, akumulasi) {
   const at = (label, fallbackLast) => {
     const sr = series.find(x => x.label === label);
     if (!sr) return null;
     const arr = sr.data || [];
+    // KPI akumulatif: nilai "s.d. bulan terpilih" = angka terakhir yang tersedia pada atau
+    // sebelum bulan tsb, bukan kosong ketika bulan itu belum ada penambahan data.
+    if (akumulasi && !fallbackLast) {
+      for (let k = Math.min(idx, arr.length - 1); k >= 0; k--) {
+        if (arr[k] !== null && arr[k] !== undefined) return arr[k];
+      }
+      return null;
+    }
     if (fallbackLast) {
       const half = Math.round(arr.length / 2);
       const semEnd = idx < half ? half : arr.length;
@@ -8995,7 +9003,7 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
         return [r.item || "-", r.bulanTarget || "-", r.bulanRealisasi || "-", r.bulanPrognosa || "-", sudah ? "Terealisasi" : "Belum"];
       }),
       charts: [{
-        title: "Akumulasi program", decimals: 0, unit: "program",
+        title: "Akumulasi program", decimals: 0, unit: "program", akumulasi: true,
         capaianSeries: (() => {
           try {
             return computeProgramAOCapaianRows(rekap, id, store.capaianModes, store.capaianManualValues)
@@ -9074,15 +9082,19 @@ function paginatePaparanSlides(slides) {
       return;
     }
     const total = Math.ceil(sl.rows.length / per);
+    // `chart-table` (Fisik/PRK): grafik tetap tampil di SETIAP lembar — susunannya konsisten
+    // grafik di atas, rincian di bawah. Jenis lain cukup grafik di lembar pertama.
+    const keepChartEveryPage = sl.kind === "chart-table";
     for (let pIdx = 0; pIdx < total; pIdx++) {
       out.push({
         ...sl,
         id: pIdx === 0 ? sl.id : `${sl.id}-${pIdx + 1}`,
         title: `${sl.title} (${pIdx + 1}/${total})`,
         rows: sl.rows.slice(pIdx * per, (pIdx + 1) * per),
-        // Grafik hanya pada lembar pertama supaya lembar lanjutan memuat lebih banyak baris.
-        kind: pIdx === 0 ? sl.kind : "table",
-        charts: pIdx === 0 ? sl.charts : undefined
+        // Seluruh baris disimpan agar tinggi baris dihitung seragam antar lembar.
+        rowsAll: sl.rows,
+        kind: keepChartEveryPage || pIdx === 0 ? sl.kind : "table",
+        charts: keepChartEveryPage || pIdx === 0 ? sl.charts : undefined
       });
     }
   });
@@ -9141,7 +9153,7 @@ function paparanSlideSvgChildren(slide, note, brand) {
     els.push(E(PaparanLineChart, {
       key: "c0", x: 40, y: bodyTop, w: PAPARAN_W - 80, h: bodyH,
       decimals: c.decimals, series: c.series, unit: c.unit,
-      markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit, c.capaianSeries)
+      markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit, c.capaianSeries, c.akumulasi)
     }));
   } else if (slide.kind === "chart-table") {
     // Grafik di bagian atas, tabel daftar program di bawahnya.
@@ -9150,7 +9162,7 @@ function paparanSlideSvgChildren(slide, note, brand) {
     if (c) els.push(E(PaparanLineChart, {
       key: "ct", x: 40, y: bodyTop, w: PAPARAN_W - 80, h: chartH,
       decimals: c.decimals, series: c.series, unit: c.unit, compact: true,
-      markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit, c.capaianSeries)
+      markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit, c.capaianSeries, c.akumulasi)
     }));
     els.push.apply(els, paparanTableEls(slide, 40, bodyTop + (c ? chartH + 12 : 0), PAPARAN_W - 80, bodyH - (c ? chartH + 12 : 0)));
   } else if (slide.kind === "table-chart") {
@@ -9162,7 +9174,7 @@ function paparanSlideSvgChildren(slide, note, brand) {
     if (c) els.push(E(PaparanLineChart, {
       key: "tc", x: 40, y: bodyTop + tableH + 12, w: PAPARAN_W - 80, h: chartH,
       decimals: c.decimals, series: c.series, unit: c.unit, compact: true,
-      markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit, c.capaianSeries)
+      markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit, c.capaianSeries, c.akumulasi)
     }));
   } else if (slide.kind === "chart-grid") {
     const list = slide.charts || [];
@@ -9176,7 +9188,7 @@ function paparanSlideSvgChildren(slide, note, brand) {
       els.push(E(PaparanLineChart, {
         key: "c" + i, x: 40 + cIdx * (cw + gapX), y: bodyTop + r * (ch + gapY),
         w: cw, h: ch, decimals: c.decimals, series: c.series, title: c.title, unit: c.unit, compact: true,
-        markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit, c.capaianSeries)
+        markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit, c.capaianSeries, c.akumulasi)
       }));
     });
   } else if (slide.kind === "table") {
@@ -9208,12 +9220,17 @@ function paparanTableEls(slide, x, y, w, h) {
   const headH = 28;
   const avail = h - headH;
   const wrapped = rows.map(r => paparanWrap(String(r[0] === null || r[0] === undefined ? "-" : r[0]), maxCharsFirst));
-  const maxLines = Math.max(1, ...wrapped.map(l => l.length));
+  // Tinggi baris dihitung dari SELURUH baris slide (lintas lembar), supaya lembar 1/2 dan 2/2
+  // punya tinggi baris yang sama.
+  const rowsForHeight = Array.isArray(slide.rowsAll) && slide.rowsAll.length ? slide.rowsAll : rows;
+  const wrappedAll = rowsForHeight.map(r => paparanWrap(String(r[0] === null || r[0] === undefined ? "-" : r[0]), maxCharsFirst));
+  const maxLines = Math.max(1, ...wrappedAll.map(l => l.length));
   const lineH = 13;
   const naturalRowH = Math.max(20, maxLines * lineH + 8);
   const maxRows = Math.max(1, Math.floor(avail / naturalRowH));
   const shown = rows.slice(0, maxRows);
-  const rowH = Math.min(naturalRowH, avail / Math.max(1, shown.length));
+  // Tetap pakai tinggi natural; hanya dikecilkan bila lembar ini benar-benar kelebihan baris.
+  const rowH = shown.length * naturalRowH <= avail ? naturalRowH : avail / Math.max(1, shown.length);
   els.push(E("rect", { key: "th", x: x, y: y, width: w, height: headH, fill: "#f1f5f9" }));
   cols.forEach((c, i) => els.push(E("text", {
     key: "hc" + i, x: xOf(i) + 8, y: y + 18, fontSize: fs, fontWeight: "700", fill: "#475569"
@@ -9263,6 +9280,39 @@ function paparanTrunc(t, n) {
 }
 
 // --- Komponen tab Paparan ---------------------------------------------------
+// Menyusun konteks data satu slide untuk Analisa AI: judul, periode, nilai grafik pada bulan
+// terpilih (termasuk %capaian), dan isi tabelnya.
+function buildPaparanSlidePrompt(slide, year, monthIdx, companyName) {
+  const lines = [];
+  const periode = monthIdx === null || monthIdx === undefined ? `tahun ${year}` : `${MONTHS_FULL[monthIdx]} ${year}`;
+  lines.push(`Anda adalah analis kinerja pembangkit listrik di ${companyName || DEFAULT_COMPANY_NAME}.`);
+  lines.push(`Tuliskan narasi singkat (maksimal 3 kalimat, bahasa Indonesia formal) untuk slide paparan berikut. Narasi akan dicetak langsung pada slide, jadi tulis mengalir tanpa judul, tanpa poin-poin, dan tanpa basa-basi pembuka.`);
+  lines.push(`Sebutkan angka pendukung dari data di bawah. Untuk KPI, nilai baiknya diukur dari %capaian terhadap target (>=100% berarti tercapai), bukan dari naik/turunnya nilai mentah. Jangan mengarang angka yang tidak ada.`);
+  lines.push("");
+  lines.push(`Slide: ${slide.title}`);
+  lines.push(`Periode: ${periode}`);
+  (slide.charts || []).forEach(c => {
+    const stt = paparanStats(c.series, slide.markIdx, c.decimals, c.unit, c.capaianSeries, c.akumulasi);
+    lines.push(`- ${c.title || "Grafik"}${c.unit ? " (" + c.unit + ")" : ""}: ` + stt.map(x => `${x.label} ${x.value}`).join(", "));
+    (c.series || []).forEach(sr => {
+      const parts = MONTHS.map((mo, i) => {
+        const v = (sr.data || [])[i];
+        return `${mo}=${v === null || v === undefined ? "-" : fmtNum(roundByDecimals(v, c.decimals), c.decimals)}`;
+      });
+      lines.push(`    ${sr.label}: ${parts.join(", ")}`);
+    });
+  });
+  const rows = Array.isArray(slide.rowsAll) && slide.rowsAll.length ? slide.rowsAll : slide.rows;
+  if (Array.isArray(rows) && rows.length) {
+    lines.push(`Tabel (${(slide.columns || []).join(" | ")}):`);
+    rows.slice(0, 25).forEach(r => lines.push(`    ${r.join(" | ")}`));
+    if (rows.length > 25) lines.push(`    ...dan ${rows.length - 25} baris lainnya`);
+  }
+  if (slide.kind === "title" || slide.kind === "closing") {
+    lines.push("Slide ini hanya halaman pembuka/penutup — cukup tulis kalimat pengantar atau penutup yang ringkas dan profesional.");
+  }
+  return lines.join("\n");
+}
 function PaparanTab({ store, nkoState, year, monthIdx, readOnly, uiConfig }) {
   const E = React.createElement;
   const [idx, setIdx] = useState(0);
@@ -9270,6 +9320,9 @@ function PaparanTab({ store, nkoState, year, monthIdx, readOnly, uiConfig }) {
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
   const [fullscreen, setFullscreen] = useState(false);
+  // Mode penulisan catatan: manual (ketik sendiri) atau AI (dibangkitkan dari data slide).
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
   const svgRefs = useRef({});
   // Navigasi keyboard saat mode Tampilan (panah kiri/kanan, Esc untuk keluar).
   useEffect(() => {
@@ -9333,6 +9386,32 @@ function PaparanTab({ store, nkoState, year, monthIdx, readOnly, uiConfig }) {
       } catch (e) { reject(e); }
     });
   }
+  async function runAiNote() {
+    if (!cur || aiLoading) return;
+    setAiError("");
+    setAiLoading(true);
+    try {
+      const live = await resolveAiSettings();
+      if (!live.enabled) {
+        setAiError("Asisten AI sedang dinonaktifkan. Hubungi Admin untuk mengaktifkannya di Pengaturan AI.");
+        return;
+      }
+      const { provider, apiKey } = resolveAiProvider(live);
+      if (!apiKey) {
+        setAiError(`Kunci API ${provider === "gemini" ? "Gemini" : "Claude"} belum tersedia. Minta Admin mengisinya di Pengaturan AI.`);
+        return;
+      }
+      const prompt = buildPaparanSlidePrompt(cur, year, monthIdx, brand.companyName);
+      const text = provider === "gemini"
+        ? await callGeminiAnalysis(apiKey, live.geminiModel, prompt)
+        : await callClaudeAnalysis(apiKey, live.claudeModel, prompt);
+      setNote(String(text || "").trim());
+    } catch (e) {
+      setAiError(e && e.message ? e.message : "Gagal memanggil layanan AI.");
+    } finally {
+      setAiLoading(false);
+    }
+  }
   async function exportPdf() {
     if (typeof window.jspdf === "undefined") {
       setError("Pustaka PDF belum termuat. Periksa koneksi internet lalu muat ulang halaman.");
@@ -9395,14 +9474,27 @@ function PaparanTab({ store, nkoState, year, monthIdx, readOnly, uiConfig }) {
             className: "px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-40"
           }, "Berikutnya →")),
         !readOnly && E("div", null,
-          E("label", { className: "text-xs font-semibold text-slate-600 block mb-1.5" }, "Catatan / narasi slide ini"),
+          E("div", { className: "flex items-center justify-between gap-2 mb-1.5 flex-wrap" },
+            E("label", { className: "text-xs font-semibold text-slate-600" }, "Catatan / narasi slide ini"),
+            E("div", { className: "flex items-center gap-2" },
+              E("button", {
+                type: "button", onClick: runAiNote, disabled: aiLoading,
+                title: "Buat narasi otomatis dari data & tampilan slide ini",
+                className: "inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1.5 rounded-full bg-violet-50 text-violet-700 hover:bg-violet-100 transition disabled:opacity-50"
+              }, E(Icon, { name: aiLoading ? "activity" : "sparkles", size: 12 }), aiLoading ? " Menganalisa..." : " Analisa AI"),
+              noteVal && E("button", {
+                type: "button", onClick: () => setNote(""),
+                title: "Kosongkan catatan (kembali menulis manual)",
+                className: "text-[11px] font-semibold px-2.5 py-1.5 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 transition"
+              }, "Bersihkan"))),
           E("textarea", {
             value: noteVal, rows: 3,
             placeholder: "Tulis penjelasan yang ingin ditampilkan pada slide ini...",
             onChange: e => setNote(e.target.value),
             className: "w-full text-xs bg-white border border-slate-200 rounded-xl px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-300"
           }),
-          E("p", { className: "text-[11px] text-slate-400 mt-1" }, "Catatan langsung muncul pada pratinjau di atas dan ikut tercetak di PDF.")))),
+          aiError && E("p", { className: "text-[11px] text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-2.5 py-2 mt-1.5" }, aiError),
+          E("p", { className: "text-[11px] text-slate-400 mt-1" }, "Tulis manual atau tekan Analisa AI untuk membuat narasi dari data slide ini. Hasilnya tetap dapat diedit, langsung muncul pada pratinjau, dan ikut tercetak di PDF.")))),
     // slide tersembunyi untuk keperluan ekspor
     E("div", { style: { position: "absolute", left: "-99999px", top: 0, width: PAPARAN_W } },
       slides.map(sl => sl.id === (cur && cur.id) ? null : svgOf(sl, "hid-" + sl.id))),
