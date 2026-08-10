@@ -4117,7 +4117,8 @@ function MonthlyGroupedTable({
   onAddRow,
   onDeleteRow,
   visibleGroups,
-  visibleGroupSubCols
+  visibleGroupSubCols,
+  capaianModes
 }) {
   const {
     pendingId,
@@ -4142,13 +4143,15 @@ function MonthlyGroupedTable({
   const defaultSubCols = [
     { key: "target", label: "Target", custom: false, formula: null },
     { key: "realisasi", label: "Realisasi", custom: false, formula: null },
-    { key: "prognosa", label: "Prognosa", custom: false, formula: null }
+    { key: "pctRealisasi", label: "%Realisasi", custom: false, formula: null },
+    { key: "prognosa", label: "Prognosa", custom: false, formula: null },
+    { key: "pctPrognosa", label: "%Prognosa", custom: false, formula: null }
   ];
   const subCols = visibleGroupSubCols && visibleGroupSubCols.length ? visibleGroupSubCols : defaultSubCols;
   function subColVars(r, g) {
     const vars = {};
     subCols.forEach(sc => {
-      if (sc.formula) return;
+      if (sc.formula || GROUP_SUBCOL_COMPUTED[sc.key]) return;
       vars[sc.key] = r[g.key + subColFieldSuffix(sc)];
     });
     return vars;
@@ -4180,7 +4183,7 @@ function MonthlyGroupedTable({
   }, subCols.map((sc, si) => /*#__PURE__*/React.createElement("th", {
     key: sc.key,
     title: sc.formula ? `Formula: ${sc.formula}` : undefined,
-    className: `border-b ${si === 0 ? "border-l " : ""}border-slate-200 px-3 py-1.5 text-right font-normal text-xs ${sc.formula ? "italic text-indigo-400" : ""}`
+    className: `border-b ${si === 0 ? "border-l " : ""}border-slate-200 px-3 py-1.5 text-right font-normal text-xs ${sc.formula ? "italic text-indigo-400" : ""}${GROUP_SUBCOL_COMPUTED[sc.key] ? " text-slate-500" : ""}`
   }, sc.label)))))), /*#__PURE__*/React.createElement("tbody", null, rows.map((r, ridx) => /*#__PURE__*/React.createElement("tr", {
     key: r.id,
     className: "hover:bg-slate-50/60"
@@ -4203,6 +4206,24 @@ function MonthlyGroupedTable({
     key: g.key
   }, subCols.map((sc, si) => {
     const cellClass = `border-b ${si === 0 ? "border-l " : ""}border-slate-100 px-1 py-0.5`;
+    // Kolom %Realisasi / %Prognosa: capaian terhadap Target, mengikuti polarisasi grup
+    // (mis. EFOR yang berpolarisasi Inverse) seperti pada tab Capaian.
+    const computedSuffix = GROUP_SUBCOL_COMPUTED[sc.key];
+    if (computedSuffix) {
+      const target = r[g.key + "Prognosa"];
+      const val = r[g.key + computedSuffix];
+      const mode = getCapaianMode(capaianModes, g.key);
+      const pct = computeCapaianPct(mode, val, target);
+      const good = pct !== null && pct !== undefined && pct >= 100;
+      return /*#__PURE__*/React.createElement("td", {
+        key: sc.key,
+        className: cellClass + " text-right text-sm tabular-nums pr-2.5 bg-slate-50/40"
+      }, pct === null || pct === undefined
+        ? /*#__PURE__*/React.createElement("span", { className: "text-slate-300" }, "-")
+        : /*#__PURE__*/React.createElement("span", {
+            className: `inline-flex items-center text-xs font-semibold px-1.5 py-0.5 rounded-full ${good ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"}`
+          }, fmtNum(pct, 1), "%"));
+    }
     if (sc.formula) {
       const computed = evalFormula(sc.formula, subColVars(r, g));
       return /*#__PURE__*/React.createElement("td", {
@@ -4641,7 +4662,8 @@ function DataTable({
   visibleGroups,
   visibleCols,
   visiblePeriods,
-  visibleGroupSubCols
+  visibleGroupSubCols,
+  capaianModes
 }) {
   if (cat.type === "monthlyGrouped") return /*#__PURE__*/React.createElement(MonthlyGroupedTable, {
     cat: cat,
@@ -4651,7 +4673,8 @@ function DataTable({
     onAddRow: onAddRow,
     onDeleteRow: onDeleteRow,
     visibleGroups: visibleGroups,
-    visibleGroupSubCols: visibleGroupSubCols
+    visibleGroupSubCols: visibleGroupSubCols,
+    capaianModes: capaianModes
   });
   if (cat.type === "monthlySimple") return /*#__PURE__*/React.createElement(MonthlySimpleTable, {
     cat: cat,
@@ -5192,7 +5215,9 @@ const UI_CONFIG_STORAGE_KEY = "performu_ui_tab_table_config_v1";
 const DEFAULT_COMPANY_NAME = "PT PLN NP Unit Pembangkitan Brantas";
 const CUSTOM_TABS_STORAGE_KEY = "performu_custom_tabs_v1";
 const GROUP_SUBCOL_FIELD_MAP = { target: "Prognosa", realisasi: "Realisasi", prognosa: "Forecast" };
-const GROUP_SUBCOL_LABEL_MAP = { target: "Target", realisasi: "Realisasi", prognosa: "Prognosa" };
+const GROUP_SUBCOL_LABEL_MAP = { target: "Target", realisasi: "Realisasi", prognosa: "Prognosa", pctRealisasi: "%Realisasi", pctPrognosa: "%Prognosa" };
+// Sub-kolom terhitung (tidak dapat diedit) pada tabel bertipe monthlyGrouped, mis. Kinerja Operasi.
+const GROUP_SUBCOL_COMPUTED = { pctRealisasi: "Realisasi", pctPrognosa: "Forecast" };
 
 function loadCustomTabDefs() {
   try {
@@ -5445,7 +5470,7 @@ function buildDefaultTabEntry(cat, order) {
     label: null,
     subTabs: defaultSubTabKeysForCat(cat).map((key, idx) => ({ key, order: idx, enabled: true })),
     columns: defaultColumnKeysForCat(cat).map((key, idx) => ({ key, order: idx, enabled: true })),
-    subColumns: (cat.type === "monthlyGrouped" ? ["target", "realisasi", "prognosa"] : []).map((key, idx) => ({ key, order: idx, enabled: true }))
+    subColumns: (cat.type === "monthlyGrouped" ? ["target", "realisasi", "pctRealisasi", "prognosa", "pctPrognosa"] : []).map((key, idx) => ({ key, order: idx, enabled: true }))
   };
 }
 function buildDefaultUiConfig() {
@@ -5467,7 +5492,7 @@ function mergeUiConfig(stored) {
       label: existing && typeof existing.label === "string" && existing.label.trim() ? existing.label : null,
       subTabs: reconcileKeyedList(existing && existing.subTabs, defaultSubTabKeysForCat(cat)),
       columns: reconcileKeyedList(existing && existing.columns, defaultColumnKeysForCat(cat)),
-      subColumns: reconcileKeyedList(existing && existing.subColumns, cat.type === "monthlyGrouped" ? ["target", "realisasi", "prognosa"] : [])
+      subColumns: reconcileKeyedList(existing && existing.subColumns, cat.type === "monthlyGrouped" ? ["target", "realisasi", "pctRealisasi", "prognosa", "pctPrognosa"] : [])
     };
     order += 1;
     return entry;
@@ -6701,6 +6726,10 @@ function computeKimiaKpiRow(cat, year, rows, kpiTargets) {
   const pelumasRow = akumRows[0] || {};
   const produksiRow = akumRows[1] || {};
   const targets = kpiTargets || {};
+  // Kolom akumulasi membawa nilai bulan sebelumnya saat bulan berjalan kosong. Untuk baris KPI
+  // hal itu keliru: bulan yang BELUM punya realisasi mentah harus dibiarkan kosong, supaya
+  // grafik/kartu tidak seolah-olah sudah ada realisasinya.
+  const rawHasRealisasi = p => (rows || []).some(r => r[p + "Realisasi"] !== null && r[p + "Realisasi"] !== undefined);
   return cat.periods.map(p => {
     const pelumasRealisasi = pelumasRow[p + "Realisasi"];
     const pelumasTarget = pelumasRow[p + "Prognosa"];
@@ -6708,7 +6737,8 @@ function computeKimiaKpiRow(cat, year, rows, kpiTargets) {
     const produksiRealisasi = produksiRow[p + "Realisasi"];
     const produksiTarget = produksiRow[p + "Prognosa"];
     const produksiPrognosa = produksiRow[p + "Forecast"];
-    const realisasiResult = computeKimiaKpiRatio(pelumasRealisasi, pelumasTarget, produksiRealisasi, produksiTarget);
+    const hasRaw = rawHasRealisasi(p);
+    const realisasiResult = hasRaw ? computeKimiaKpiRatio(pelumasRealisasi, pelumasTarget, produksiRealisasi, produksiTarget) : { value: null, flagged: false };
     const prognosaResult = computeKimiaKpiRatio(pelumasPrognosa, pelumasTarget, produksiPrognosa, produksiTarget);
     return {
       period: p,
@@ -6882,7 +6912,19 @@ const PER_ROW_CAPAIAN_CATS = ["lainnya", "bisnis"];
 function akumCapaianModeKeyFor(cat, row) {
   return PER_ROW_CAPAIAN_CATS.includes(cat.id) ? itemCapaianModeKey(cat, (row && (row.label || row.id)) || "") : cat.id;
 }
+// Baris "Produksi (kWh)" pada Biaya Kimia dan Pelumas selalu memakai rumus langsung
+// Realisasi/Target (atau Prognosa/Target) — makin tinggi produksi makin baik, berbeda dengan
+// polarisasi KPI rasio pelumas yang dipakai kategori ini secara umum.
+function isKimiaProduksiRow(cat, row) {
+  return !!cat && cat.id === "kimia" && !!row && /produksi/i.test(String(row.label || ""));
+}
 function akumCapaianPair(cat, row, period, capaianModes, capaianManualValues, target, realisasi, prognosa) {
+  if (isKimiaProduksiRow(cat, row)) {
+    return {
+      capaianRealisasi: computeCapaianPct("normal", realisasi, target),
+      capaianPrognosa: computeCapaianPct("normal", prognosa, target)
+    };
+  }
   const modeKey = akumCapaianModeKeyFor(cat, row);
   const mode = getCapaianMode(capaianModes, modeKey);
   return resolveCapaianPair(mode, capaianManualValues, modeKey, period, realisasi, prognosa, target);
@@ -7696,7 +7738,7 @@ function AnalisaPage({
     return list.length ? list : cat.periods;
   }, [cat, visibleColumnEntries]);
   const visibleGroupSubCols = useMemo(() => {
-    const entries = visibleSubColEntries.length ? visibleSubColEntries : ["target", "realisasi", "prognosa"].map((key, idx) => ({ key, order: idx, enabled: true }));
+    const entries = visibleSubColEntries.length ? visibleSubColEntries : ["target", "realisasi", "pctRealisasi", "prognosa", "pctPrognosa"].map((key, idx) => ({ key, order: idx, enabled: true }));
     return entries.map(resolveSubColDisplay);
   }, [visibleSubColEntries]);
   useEffect(() => {
@@ -7866,7 +7908,8 @@ function AnalisaPage({
     visibleGroups: visibleGroups,
     visibleCols: visibleCols,
     visiblePeriods: visiblePeriods,
-    visibleGroupSubCols: visibleGroupSubCols
+    visibleGroupSubCols: visibleGroupSubCols,
+    capaianModes: store.capaianModes
   })));
 }
 /* ============================================================
@@ -8779,12 +8822,29 @@ function paparanStats(series, idx, decimals, unit, capaian) {
   const tgt = at("Target", false);
   const real = at("Realisasi", false);
   const progAkhir = at("Prognosa", true);
+  // Indeks bulan akhir periode (semester berjalan) untuk %capaian prognosa.
+  const nAll = ((series[0] && series[0].data) || []).length || 12;
+  const halfAll = Math.round(nAll / 2);
+  const semEndIdx = (idx < halfAll ? halfAll : nAll) - 1;
   // %Capaian dipakai bila tersedia dari pemanggil (mengikuti tabel Capaian Data Input);
   // kalau tidak, dihitung sederhana sebagai nilai/target.
   const pctOf = v => tgt === null || tgt === undefined || !tgt || v === null || v === undefined ? "-" : `${fmtNum(round1(v / tgt * 100), 1)}%`;
   const pctColor = txtv => txtv === "-" ? "#94a3b8" : parseFloat(String(txtv).replace(",", ".")) >= 100 ? "#059669" : "#e11d48";
-  const capReal = capaian && capaian.realisasi !== null && capaian.realisasi !== undefined ? `${fmtNum(round1(capaian.realisasi), 1)}%` : pctOf(real);
-  const capProg = capaian && capaian.prognosa !== null && capaian.prognosa !== undefined ? `${fmtNum(round1(capaian.prognosa), 1)}%` : pctOf(progAkhir);
+  // `capaian` adalah deret per periode dari tabel Capaian Data Input (menghormati polarisasi
+  // Normal/Inverse). Tanpa itu, %capaian hanya bisa didekati dengan nilai/target — keliru untuk
+  // KPI berpolarisasi Inverse seperti EFOR dan PSST.
+  const capAt = (i, key) => {
+    if (!Array.isArray(capaian)) return null;
+    for (let k = i; k >= 0; k--) {
+      const e = capaian[k];
+      if (e && e[key] !== null && e[key] !== undefined) return e[key];
+    }
+    return null;
+  };
+  const capRealVal = capAt(idx, "realisasi");
+  const capProgVal = capAt(semEndIdx, "prognosa");
+  const capReal = capRealVal === null ? pctOf(real) : `${fmtNum(round1(capRealVal), 1)}%`;
+  const capProg = capProgVal === null ? pctOf(progAkhir) : `${fmtNum(round1(capProgVal), 1)}%`;
   return [
     { label: "Target", value: fmt(tgt), color: PAPARAN_COLORS.target },
     { label: "Realisasi", value: fmt(real), color: PAPARAN_COLORS.realisasi },
@@ -8811,6 +8871,10 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
     markIdx: cutIdx,
     charts: [{
       decimals: 2,
+      capaianSeries: nkoRows.map(r => ({
+        realisasi: r.nkoPrognosa && r.nkoRealisasi !== null && r.nkoRealisasi !== undefined ? round1(r.nkoRealisasi / r.nkoPrognosa * 100) : null,
+        prognosa: r.nkoPrognosa && r.nkoForecast !== null && r.nkoForecast !== undefined ? round1(r.nkoForecast / r.nkoPrognosa * 100) : null
+      })),
       series: [
         { label: "Target", color: PAPARAN_COLORS.target, dash: "5 4", data: nkoRows.map(r => r.nkoPrognosa), labels: MONTHS },
         { label: "Realisasi", color: PAPARAN_COLORS.realisasi, data: trim(nkoRows.map(r => r.nkoRealisasi)), labels: MONTHS },
@@ -8827,6 +8891,12 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
     kind: "chart-grid", markIdx: cutIdx,
     charts: (opCat ? opCat.groups : []).map(g => ({
       title: g.label, decimals: opCat.decimals, unit: opCat.unit || "%",
+      capaianSeries: (() => {
+        try {
+          const cr = computeCapaianRows(opCat, opRows, store.capaianModes, store.capaianManualValues);
+          return cr.map(r => ({ realisasi: r[g.key + "CapaianRealisasi"], prognosa: r[g.key + "CapaianPrognosa"] }));
+        } catch (e) { return null; }
+      })(),
       series: [
         { label: "Target", color: PAPARAN_COLORS.target, dash: "5 4", data: opRows.map(r => r[g.key + "Prognosa"]), labels: MONTHS },
         { label: "Realisasi", color: PAPARAN_COLORS.realisasi, data: trim(opRows.map(r => r[g.key + "Realisasi"])), labels: MONTHS },
@@ -8851,6 +8921,12 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
         try { kpi = computeKimiaKpiRow(cat, year, rows, targets); } catch (e) {}
         return {
           title: cat.title, decimals: 4, unit: cat.unit || "",
+          capaianSeries: (() => {
+            try {
+              return computeKimiaCapaianRows(cat, year, rows, targets, store.capaianModes, store.capaianManualValues)
+                .map(r => ({ realisasi: r.capaianRealisasi, prognosa: r.capaianPrognosa }));
+            } catch (e) { return null; }
+          })(),
           series: [
             { label: "Target", color: PAPARAN_COLORS.target, dash: "5 4", data: kpi.map(m => m.target), labels: MONTHS },
             { label: "Realisasi", color: PAPARAN_COLORS.realisasi, data: trim(kpi.map(m => m.realisasi)), labels: MONTHS },
@@ -8874,6 +8950,12 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
       const realCut = Math.min(lastReal, cutIdx);
       return {
         title: cat.title, decimals: cat.decimals, unit: cat.unit || "",
+        capaianSeries: (() => {
+          try {
+            return computeItemGroupedCapaianRows(cat, year, rows, store.capaianModes, store.capaianManualValues)
+              .map(r => ({ realisasi: r.capaianRealisasi, prognosa: r.capaianPrognosa }));
+          } catch (e) { return null; }
+        })(),
         series: [
           { label: "Target", color: PAPARAN_COLORS.target, dash: "5 4", data: cat.periods.map(p => sumAt(p, "Prognosa")), labels: MONTHS },
           { label: "Realisasi", color: PAPARAN_COLORS.realisasi, data: cat.periods.map((p, i) => i <= realCut ? sumAt(p, "Realisasi") : null), labels: MONTHS },
@@ -8896,12 +8978,30 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
       if (r.realisasi !== null && r.realisasi !== undefined && r.realisasi !== 0) lastReal = i;
     });
     const realCut = Math.min(lastReal, cutIdx);
+    // Hanya program yang RELEVAN s.d. bulan terpilih: targetnya jatuh tempo sampai bulan tsb,
+    // atau sudah terealisasi sampai bulan tsb.
+    const upTo = (label) => {
+      const t = monthLabelToIndex(label);
+      if (!t) return false;
+      if (t.year && t.year !== year) return t.year < year;
+      return t.monthIdx <= cutIdx;
+    };
+    const relevan = programRows.filter(r => upTo(r.bulanTarget) || upTo(r.bulanRealisasi));
     slides.push({
-      id: id, title: judul, kind: "table-chart", markIdx: cutIdx,
-      columns: [cfg && id === "prk" ? "Item Program AI" : "Item Program AO", "Bulan Target", "Bulan Realisasi", "Bulan Prognosa"],
-      rows: programRows.map(r => [r.item || "-", r.bulanTarget || "-", r.bulanRealisasi || "-", r.bulanPrognosa || "-"]),
+      id: id, title: judul, kind: "chart-table", markIdx: cutIdx,
+      columns: [cfg && id === "prk" ? "Item Program AI" : "Item Program AO", "Bulan Target", "Bulan Realisasi", "Bulan Prognosa", "Status"],
+      rows: relevan.map(r => {
+        const sudah = !!monthLabelToIndex(r.bulanRealisasi);
+        return [r.item || "-", r.bulanTarget || "-", r.bulanRealisasi || "-", r.bulanPrognosa || "-", sudah ? "Terealisasi" : "Belum"];
+      }),
       charts: [{
         title: "Akumulasi program", decimals: 0, unit: "program",
+        capaianSeries: (() => {
+          try {
+            return computeProgramAOCapaianRows(rekap, id, store.capaianModes, store.capaianManualValues)
+              .map(r => ({ realisasi: r.capaianRealisasi, prognosa: r.capaianPrognosa }));
+          } catch (e) { return null; }
+        })(),
         series: [
           { label: "Target", color: PAPARAN_COLORS.target, dash: "5 4", data: rekap.map(r => r.akumTarget), labels: MONTHS },
           { label: "Realisasi", color: PAPARAN_COLORS.realisasi, data: rekap.map((r, i) => i <= realCut ? r.akumRealisasi : null), labels: MONTHS },
@@ -8916,12 +9016,21 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
   const bisnisRows = rowsOf("bisnis");
   let bisnisCap = [];
   try { bisnisCap = computeLainnyaCapaianItemRows(bisnisCat, year, bisnisRows, store.capaianModes, store.capaianManualValues); } catch (e) {}
+  // Triwulan yang sesuai dengan bulan terpilih (mengikuti pemetaan pada kartu Beranda).
+  const qInfo = bisnisQuarterForMonth(monthIdx === null || monthIdx === undefined ? 11 : monthIdx);
+  const qKey = QUARTERS[qInfo.qIdx === null || qInfo.qIdx === undefined ? 0 : qInfo.qIdx];
+  const bisnisAkum = bisnisCat ? accumulateItemRows(bisnisCat, bisnisRows) : [];
+  const bd = bisnisCat ? bisnisCat.decimals : 1;
   slides.push({
-    id: "bisnis", title: "Rekap Kinerja Bisnis Proses", kind: "table",
-    columns: ["Uraian", ...QUARTERS.map(q => `${q} %Realisasi`), ...QUARTERS.map(q => `${q} %Prognosa`)],
-    rows: bisnisCap.map(r => [r.label || "-",
-      ...QUARTERS.map(q => r[q + "CapaianRealisasi"] === null || r[q + "CapaianRealisasi"] === undefined ? "-" : `${fmtNum(r[q + "CapaianRealisasi"], 1)}%`),
-      ...QUARTERS.map(q => r[q + "CapaianPrognosa"] === null || r[q + "CapaianPrognosa"] === undefined ? "-" : `${fmtNum(r[q + "CapaianPrognosa"], 1)}%`)])
+    id: "bisnis", title: `Rekap Kinerja Bisnis Proses — ${qKey} ${year}`, kind: "table",
+    columns: ["Uraian", "Target", "Realisasi", "Prognosa", "%Realisasi", "%Prognosa"],
+    rows: bisnisCap.map((r, i) => {
+      const lv = bisnisAkum[i] || {};
+      return [r.label || "-",
+        fmtNum(lv[qKey + "Prognosa"], bd), fmtNum(lv[qKey + "Realisasi"], bd), fmtNum(lv[qKey + "Forecast"], bd),
+        r[qKey + "CapaianRealisasi"] === null || r[qKey + "CapaianRealisasi"] === undefined ? "-" : `${fmtNum(r[qKey + "CapaianRealisasi"], 1)}%`,
+        r[qKey + "CapaianPrognosa"] === null || r[qKey + "CapaianPrognosa"] === undefined ? "-" : `${fmtNum(r[qKey + "CapaianPrognosa"], 1)}%`];
+    })
   });
 
   // 8. Rekap Kinerja Unit Lainnya (bulan terpilih)
@@ -8943,18 +9052,19 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
         cap[pKey + "CapaianPrognosa"] === null || cap[pKey + "CapaianPrognosa"] === undefined ? "-" : `${fmtNum(cap[pKey + "CapaianPrognosa"], 1)}%`];
     })
   });
+  slides.push({ id: "penutup", title: "Terima Kasih", kind: "closing", subtitle: monthFull ? `Laporan Kinerja Unit — ${monthFull} ${year}` : `Laporan Kinerja Unit — ${year}` });
   return paginatePaparanSlides(slides);
 }
 // Memecah slide bertabel menjadi beberapa lembar bila barisnya tidak muat dalam satu slide,
 // supaya seluruh data tetap tampil (mis. daftar program Fisik/PRK yang panjang).
 function paparanRowsPerSlide(kind) {
   // Konservatif: nama program/KPI sering panjang sehingga tiap baris memakai 2 baris teks.
-  return kind === "table-chart" ? 6 : 9;
+  return kind === "table-chart" || kind === "chart-table" ? 6 : 9;
 }
 function paginatePaparanSlides(slides) {
   const out = [];
   slides.forEach(sl => {
-    if ((sl.kind !== "table" && sl.kind !== "table-chart") || !Array.isArray(sl.rows)) {
+    if ((sl.kind !== "table" && sl.kind !== "table-chart" && sl.kind !== "chart-table") || !Array.isArray(sl.rows)) {
       out.push(sl);
       return;
     }
@@ -8988,6 +9098,18 @@ function paparanSlideSvgChildren(slide, note, brand) {
   const logoR = b.showLogoRight !== false && b.logoRight ? b.logoRight : null;
   const els = [];
   els.push(E("rect", { key: "bg", x: 0, y: 0, width: PAPARAN_W, height: PAPARAN_H, fill: "#ffffff" }));
+  if (slide.kind === "closing") {
+    els.push(E("rect", { key: "band", x: 0, y: 0, width: PAPARAN_W, height: PAPARAN_H, fill: "#0F2A3F" }));
+    els.push(E("text", { key: "c1", x: PAPARAN_W / 2, y: 255, textAnchor: "middle", fontSize: 52, fontWeight: "800", fill: "#ffffff" }, slide.title));
+    els.push(E("text", { key: "c2", x: PAPARAN_W / 2, y: 305, textAnchor: "middle", fontSize: 18, fill: "#7dd3a0" }, slide.subtitle || ""));
+    els.push(E("text", { key: "c3", x: PAPARAN_W / 2, y: 352, textAnchor: "middle", fontSize: 15, fill: "#cbd5e1" }, companyName));
+    if (note) {
+      paparanWrap(note, 78).slice(0, 3).forEach((ln, i) => els.push(E("text", { key: "cn" + i, x: PAPARAN_W / 2, y: 400 + i * 22, textAnchor: "middle", fontSize: 14, fill: "#e2e8f0" }, ln)));
+    }
+    if (logoL) els.push(E("image", { key: "lgL", href: logoL, x: 40, y: 34, width: 130, height: 54, preserveAspectRatio: "xMinYMid meet" }));
+    if (logoR) els.push(E("image", { key: "lgR", href: logoR, x: PAPARAN_W - 170, y: 34, width: 130, height: 54, preserveAspectRatio: "xMaxYMid meet" }));
+    return els;
+  }
   if (slide.kind === "title") {
     els.push(E("rect", { key: "band", x: 0, y: 0, width: PAPARAN_W, height: PAPARAN_H, fill: "#0F2A3F" }));
     els.push(E("text", { key: "t1", x: PAPARAN_W / 2, y: 230, textAnchor: "middle", fontSize: 44, fontWeight: "800", fill: "#ffffff" }, slide.title));
@@ -9019,8 +9141,18 @@ function paparanSlideSvgChildren(slide, note, brand) {
     els.push(E(PaparanLineChart, {
       key: "c0", x: 40, y: bodyTop, w: PAPARAN_W - 80, h: bodyH,
       decimals: c.decimals, series: c.series, unit: c.unit,
-      markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit)
+      markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit, c.capaianSeries)
     }));
+  } else if (slide.kind === "chart-table") {
+    // Grafik di bagian atas, tabel daftar program di bawahnya.
+    const c = slide.charts && slide.charts[0];
+    const chartH = Math.max(150, bodyH * 0.44);
+    if (c) els.push(E(PaparanLineChart, {
+      key: "ct", x: 40, y: bodyTop, w: PAPARAN_W - 80, h: chartH,
+      decimals: c.decimals, series: c.series, unit: c.unit, compact: true,
+      markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit, c.capaianSeries)
+    }));
+    els.push.apply(els, paparanTableEls(slide, 40, bodyTop + (c ? chartH + 12 : 0), PAPARAN_W - 80, bodyH - (c ? chartH + 12 : 0)));
   } else if (slide.kind === "table-chart") {
     // Separuh atas: tabel daftar program. Separuh bawah: grafik akumulasi.
     const chartH = Math.max(150, bodyH * 0.42);
@@ -9030,7 +9162,7 @@ function paparanSlideSvgChildren(slide, note, brand) {
     if (c) els.push(E(PaparanLineChart, {
       key: "tc", x: 40, y: bodyTop + tableH + 12, w: PAPARAN_W - 80, h: chartH,
       decimals: c.decimals, series: c.series, unit: c.unit, compact: true,
-      markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit)
+      markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit, c.capaianSeries)
     }));
   } else if (slide.kind === "chart-grid") {
     const list = slide.charts || [];
@@ -9044,7 +9176,7 @@ function paparanSlideSvgChildren(slide, note, brand) {
       els.push(E(PaparanLineChart, {
         key: "c" + i, x: 40 + cIdx * (cw + gapX), y: bodyTop + r * (ch + gapY),
         w: cw, h: ch, decimals: c.decimals, series: c.series, title: c.title, unit: c.unit, compact: true,
-        markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit)
+        markIdx: slide.markIdx, stats: paparanStats(c.series, slide.markIdx, c.decimals, c.unit, c.capaianSeries)
       }));
     });
   } else if (slide.kind === "table") {
