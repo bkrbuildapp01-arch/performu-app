@@ -5213,6 +5213,13 @@ const CAPAIAN_PROGRAMAO_CATS = ["fisik", "prk"];
 const CAPAIAN_CATS = ["operasi", "kimia", "lainnya", "bisnis", ...CAPAIAN_ITEM_CATS, ...CAPAIAN_PROGRAMAO_CATS];
 const UI_CONFIG_STORAGE_KEY = "performu_ui_tab_table_config_v1";
 const DEFAULT_COMPANY_NAME = "PT PLN NP Unit Pembangkitan Brantas";
+// Kategori yang angkanya ditampilkan dengan MINIMAL 2 desimal (Beranda, Analisa, Paparan).
+// Kalau data aslinya memang lebih rinci, jumlah desimal aslinya yang dipakai.
+const MIN_2_DECIMAL_CATS = ["lainnya"];
+function displayDecimalsFor(catId, decimals) {
+  const d = decimals === null || decimals === undefined ? 1 : decimals;
+  return MIN_2_DECIMAL_CATS.includes(catId) ? Math.max(2, d) : d;
+}
 const CUSTOM_TABS_STORAGE_KEY = "performu_custom_tabs_v1";
 const GROUP_SUBCOL_FIELD_MAP = { target: "Prognosa", realisasi: "Realisasi", prognosa: "Forecast" };
 const GROUP_SUBCOL_LABEL_MAP = { target: "Target", realisasi: "Realisasi", prognosa: "Prognosa", pctRealisasi: "%Realisasi", pctPrognosa: "%Prognosa" };
@@ -5605,7 +5612,7 @@ function collectRedKpis(store, selectedYears, monthIdx) {
         icon: "clipboard",
         color: "pink",
         unit: lainnyaCat.unit || "",
-        decimals: lainnyaCat.decimals,
+        decimals: displayDecimalsFor("lainnya", lainnyaCat.decimals),
         latest: t.value,
         target: t.prognosa,
         capaianPct,
@@ -6119,7 +6126,7 @@ function BerandaPage({
     icon: mainMetric.icon,
     iconColorClass: mainMetric.iconColorClass,
     lineColor: mainMetric.lineColor,
-    decimals: mainCat.decimals,
+    decimals: displayDecimalsFor(mainMetric.catId, mainCat.decimals),
     capaianPctList: mainCapaianPctList,
     years: store[mainMetric.catId].years,
     selectedYear: selectedYears[mainMetric.catId],
@@ -6292,7 +6299,7 @@ function BerandaPage({
       className: `font-semibold ${isActive ? "text-white" : "text-slate-700"}`
     }, row.label), trend ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
       className: `font-semibold tabular-nums ${isActive ? "text-white" : "text-slate-700"}`
-    }, fmtNum(trend.value, 1), lainnyaUnit),
+    }, fmtNum(trend.value, displayDecimalsFor("lainnya", lainnyaCat && lainnyaCat.decimals)), lainnyaUnit),
     // Badge memakai %CAPAIAN terhadap target (hijau bila >= 100%), sama seperti kartu KPI
     // lain di Beranda — bukan lagi arah naik/turun terhadap bulan sebelumnya.
     lainnyaCapaianOf(row) === null ? null : /*#__PURE__*/React.createElement("span", {
@@ -9058,7 +9065,7 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
     id: "lainnya", title: `Rekap Kinerja Unit Lainnya${monthFull ? " — " + monthFull : ""}`, kind: "table",
     columns: ["Uraian", "Target", "Realisasi", "Prognosa", "% Capaian Realisasi", "% Capaian Prognosa"],
     rows: lainnyaRows.map(row => {
-      const d = lainnyaCat ? lainnyaCat.decimals : 1;
+      const d = displayDecimalsFor("lainnya", lainnyaCat ? lainnyaCat.decimals : 1);
       const t = row[pKey + "Prognosa"];
       const rl = row[pKey + "Realisasi"];
       const pg = row[pKey + "Forecast"];
@@ -11420,7 +11427,7 @@ function AnalisaInsightPage({
       periods: MONTHS,
       unit: unitFor("lainnya", row.label, lainnyaCat.unit),
       capaianPct: lainnyaCap[row.id],
-      decimals: lainnyaCat.decimals,
+      decimals: displayDecimalsFor("lainnya", lainnyaCat.decimals),
       color: "pink",
       icon: "clipboard",
       monthIdx: monthIdx,
