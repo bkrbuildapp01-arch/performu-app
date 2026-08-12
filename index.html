@@ -375,6 +375,11 @@ const NKO_FORMULA_TYPES = [{
   label: "Nilai Pengurang (mengurangi total NKO)",
   shortLabel: "Pengurang",
   desc: "Realisasi diinput langsung sebagai nilai pengurang terhadap total NKO (mis. Compliance)."
+}, {
+  key: "stabilize",
+  label: "Stabilize (aturan bertingkat)",
+  shortLabel: "Stabilize",
+  desc: "Capaian mengikuti aturan bertingkat atas persen realisasi. Aturannya disusun di Pengaturan > Kelola Tab & Tabel pada KPI yang terhubung."
 }];
 function nkoPolarisasiLabel(node) {
   if (!node || node.sourceType === "na") return "-";
@@ -819,7 +824,22 @@ function cloneNkoStructureForYear(nkoState, fromYear) {
 }
 
 /* --- Formula engine: hitung % pencapaian dan nilai tertimbang --- */
-function nkoComputePct(node, resolved) {
+// Kunci mode capaian untuk KPI NKO yang terhubung ke Data Input — dipakai agar aturan
+// Stabilize yang disusun di Kelola Tab & Tabel juga berlaku pada Form NKO.
+function nkoCapaianModeKeyFor(node) {
+  if (!node || node.sourceType !== "linked" || !node.linkedCatId) return null;
+  const cat = CATEGORIES.find(c => c.id === node.linkedCatId);
+  if (!cat) return null;
+  if (cat.type === "monthlyGrouped") return node.linkedGroupKey || (cat.groups[0] && cat.groups[0].key) || cat.id;
+  if (PER_ROW_CAPAIAN_CATS.includes(cat.id) && node.linkedRowLabel) return itemCapaianModeKey(cat, node.linkedRowLabel);
+  return cat.id;
+}
+function nkoStabilizeRulesFor(node, store) {
+  const key = nkoCapaianModeKeyFor(node);
+  if (!key || !store) return null;
+  return getCapaianRules(store.capaianModes, key);
+}
+function nkoComputePct(node, resolved, rules) {
   if (!node) return null;
   if (node.sourceType === "na") return null;
   if (node.formulaType === "direct") {
@@ -828,6 +848,10 @@ function nkoComputePct(node, resolved) {
   const rencana = resolved ? resolved.rencana : node.rencana;
   const realisasi = resolved ? resolved.realisasi : node.prognosa;
   if (rencana === null || rencana === undefined || realisasi === null || realisasi === undefined || rencana === 0) return null;
+  if (node.formulaType === "stabilize") {
+    const v = evalStabilizeRules(rules, realisasi / rencana * 100);
+    return v === null ? null : round4(v);
+  }
   let pct;
   if (node.formulaType === "inverse") {
     pct = rencana / realisasi * 100;
@@ -836,8 +860,8 @@ function nkoComputePct(node, resolved) {
   }
   return round4(pct);
 }
-function nkoCappedPct(node, resolved) {
-  const pct = nkoComputePct(node, resolved);
+function nkoCappedPct(node, resolved, rules) {
+  const pct = nkoComputePct(node, resolved, rules);
   if (pct === null) return null;
   const cap = node.capMax;
   if (cap === null || cap === undefined || cap === "" || Number.isNaN(cap)) return pct;
@@ -994,7 +1018,7 @@ function nkoComputeItemResult(item, weight, store, year, monthIdx, useForecast) 
   let subResults = null;
   let pct = null;
   const ownResolved = nkoResolveNode(item, store, year, monthIdx, useForecast);
-  const ownPct = nkoCappedPct(item, ownResolved);
+  const ownPct = nkoCappedPct(item, ownResolved, nkoStabilizeRulesFor(item, store));
   if (hasSubItems) {
     subResults = item.subItems.map(s => {
       if (s.formulaType === "deduction") {
@@ -1003,7 +1027,7 @@ function nkoComputeItemResult(item, weight, store, year, monthIdx, useForecast) 
         return { ...s, pct: null, nilai: sRealisasi === null || sRealisasi === undefined ? null : round4(-Math.abs(sRealisasi)), rencana: null, prognosa: sRealisasi };
       }
       const sResolved = nkoResolveNode(s, store, year, monthIdx, useForecast);
-      return { ...s, pct: nkoCappedPct(s, sResolved), rencana: sResolved.rencana, prognosa: sResolved.realisasi };
+      return { ...s, pct: nkoCappedPct(s, sResolved, nkoStabilizeRulesFor(s, store)), rencana: sResolved.rencana, prognosa: sResolved.realisasi };
     });
     if (ownPct !== null) {
       // KPI utama punya rencana/realisasi (atau % manual) sendiri — dipakai langsung,
@@ -1682,20 +1706,96 @@ function fmtPct(v, decimals = 1) {
 const CAPAIAN_MODE_OPTIONS = [
   { key: "normal", label: "Normal" },
   { key: "inverse", label: "Inverse" },
-  { key: "direct", label: "Langsung" }
+  { key: "direct", label: "Langsung" },
+  { key: "stabilize", label: "Stabilize" }
 ];
+// ---------------------------------------------------------------------------
+// Mode "Stabilize"
+// ---------------------------------------------------------------------------
+// Sebagian KPI (mis. Biaya Pemeliharaan) tidak dinilai "makin tinggi makin baik" atau
+// sebaliknya, melainkan punya titik optimal — terlalu hemat maupun terlalu boros sama-sama
+// menurunkan capaian. Aturannya berupa fungsi bertingkat atas PERSEN REALISASI:
+//
+//     Persen Realisasi = Realisasi / Anggaran (Target) x 100
+//
+// Aturan disimpan sebagai daftar rentang + ekspresi, dievaluasi oleh evalFormula (parser
+// aritmetika milik aplikasi sendiri, bukan eval() JavaScript). AI hanya dipakai SEKALI untuk
+// menerjemahkan narasi menjadi daftar aturan ini; perhitungan harian tetap deterministik.
+const STABILIZE_VAR = "x"; // x = persen realisasi
+// Setelan mode capaian bisa berupa string ("normal") atau objek { mode, narasi, rules }.
 function getCapaianMode(capaianModes, key) {
   const m = capaianModes && capaianModes[key];
-  return m === "inverse" || m === "direct" ? m : "normal";
+  const v = m && typeof m === "object" ? m.mode : m;
+  return v === "inverse" || v === "direct" || v === "stabilize" ? v : "normal";
 }
-function computeCapaianPct(mode, realisasiOrProg, target) {
+function getCapaianRules(capaianModes, key) {
+  const m = capaianModes && capaianModes[key];
+  return m && typeof m === "object" && Array.isArray(m.rules) ? m.rules : null;
+}
+function getCapaianNarasi(capaianModes, key) {
+  const m = capaianModes && capaianModes[key];
+  return m && typeof m === "object" && typeof m.narasi === "string" ? m.narasi : "";
+}
+// Aturan cocok bila x berada dalam rentang [from, to] sesuai inklusivitas masing-masing sisi.
+function stabilizeRuleMatches(rule, x) {
+  if (!rule) return false;
+  const from = rule.from === null || rule.from === undefined || rule.from === "" ? null : Number(rule.from);
+  const to = rule.to === null || rule.to === undefined || rule.to === "" ? null : Number(rule.to);
+  if (from !== null && !(rule.fromInc ? x >= from : x > from)) return false;
+  if (to !== null && !(rule.toInc ? x <= to : x < to)) return false;
+  return true;
+}
+function evalStabilizeRules(rules, x) {
+  if (!Array.isArray(rules) || !rules.length || x === null || x === undefined || Number.isNaN(x)) return null;
+  const hit = rules.find(r => stabilizeRuleMatches(r, x));
+  if (!hit) return null;
+  const vars = { [STABILIZE_VAR]: x, persen: x, persenRealisasi: x };
+  const v = evalFormula(hit.expr, vars);
+  return v === null || v === undefined || Number.isNaN(v) ? null : round1(v);
+}
+function computeCapaianPct(mode, realisasiOrProg, target, rules) {
   if (target === null || target === undefined || target === 0) return null;
   if (realisasiOrProg === null || realisasiOrProg === undefined) return null;
+  if (mode === "stabilize") {
+    return evalStabilizeRules(rules, realisasiOrProg / target * 100);
+  }
   if (mode === "inverse") {
     if (realisasiOrProg === 0) return null;
     return round1(target / realisasiOrProg * 100);
   }
   return round1(realisasiOrProg / target * 100);
+}
+// Pemeriksaan hasil terjemahan AI: rentang saling tumpang tindih, ada celah, atau sambungan
+// antar-segmen melompat jauh. Dipakai untuk memberi peringatan sebelum aturan disimpan.
+function validateStabilizeRules(rules) {
+  const warn = [];
+  if (!Array.isArray(rules) || !rules.length) return ["Belum ada aturan."];
+  rules.forEach((r, i) => {
+    if (!r.expr || !String(r.expr).trim()) warn.push(`Aturan ${i + 1}: rumus kosong.`);
+    else if (evalFormula(r.expr, { [STABILIZE_VAR]: 100, persen: 100, persenRealisasi: 100 }) === null) {
+      warn.push(`Aturan ${i + 1}: rumus "${r.expr}" tidak dapat dibaca.`);
+    }
+    const from = r.from === null || r.from === undefined || r.from === "" ? null : Number(r.from);
+    const to = r.to === null || r.to === undefined || r.to === "" ? null : Number(r.to);
+    if (from !== null && to !== null && from > to) warn.push(`Aturan ${i + 1}: batas bawah lebih besar dari batas atas.`);
+  });
+  // celah / tumpang tindih pada titik uji
+  const probes = [0, 50, 90, 95, 97, 97.9, 98, 98.5, 99, 99.5, 100, 100.1, 105, 110, 150];
+  const kosong = probes.filter(x => !rules.some(r => stabilizeRuleMatches(r, x)));
+  if (kosong.length) warn.push(`Belum ada aturan untuk persen realisasi: ${kosong.join(", ")}.`);
+  const ganda = probes.filter(x => rules.filter(r => stabilizeRuleMatches(r, x)).length > 1);
+  if (ganda.length) warn.push(`Lebih dari satu aturan cocok pada: ${ganda.join(", ")} (aturan pertama yang dipakai).`);
+  // sambungan antar segmen
+  rules.forEach((r, i) => {
+    const to = r.to === null || r.to === undefined || r.to === "" ? null : Number(r.to);
+    if (to === null) return;
+    const a = evalStabilizeRules(rules, to - 0.0001);
+    const b = evalStabilizeRules(rules, to + 0.0001);
+    if (a !== null && b !== null && Math.abs(a - b) > 1) {
+      warn.push(`Sambungan di ${to}% melompat dari ${fmtNum(a, 1)}% ke ${fmtNum(b, 1)}%.`);
+    }
+  });
+  return warn;
 }
 function manualCapaianKey(modeKey, period) {
   return `${modeKey}::${period}`;
@@ -1704,7 +1804,7 @@ function getManualCapaian(capaianManualValues, modeKey, period) {
   const entry = capaianManualValues && capaianManualValues[manualCapaianKey(modeKey, period)];
   return entry || {};
 }
-function resolveCapaianPair(mode, capaianManualValues, modeKey, period, realisasi, prognosa, target) {
+function resolveCapaianPair(mode, capaianManualValues, modeKey, period, realisasi, prognosa, target, rules) {
   if (mode === "direct") {
     const manual = getManualCapaian(capaianManualValues, modeKey, period);
     return {
@@ -1713,8 +1813,8 @@ function resolveCapaianPair(mode, capaianManualValues, modeKey, period, realisas
     };
   }
   return {
-    capaianRealisasi: computeCapaianPct(mode, realisasi, target),
-    capaianPrognosa: computeCapaianPct(mode, prognosa, target)
+    capaianRealisasi: computeCapaianPct(mode, realisasi, target, rules),
+    capaianPrognosa: computeCapaianPct(mode, prognosa, target, rules)
   };
 }
 function computeCapaianRows(cat, rows, capaianModes, capaianManualValues) {
@@ -1728,7 +1828,7 @@ function computeCapaianRows(cat, rows, capaianModes, capaianManualValues) {
       const realisasi = r[g.key + "Realisasi"];
       const prognosa = r[g.key + "Forecast"];
       const mode = getCapaianMode(capaianModes, g.key);
-      const pair = resolveCapaianPair(mode, capaianManualValues, g.key, r.bulan, realisasi, prognosa, target);
+      const pair = resolveCapaianPair(mode, capaianManualValues, g.key, r.bulan, realisasi, prognosa, target, getCapaianRules(capaianModes, g.key));
       const capaianRealisasi = pair.capaianRealisasi;
       const capaianPrognosa = pair.capaianPrognosa;
       const usesFallback = realisasi === null || realisasi === undefined;
@@ -1950,7 +2050,7 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
     const prognosaAkhir = lastValueInRange(rows, semStart, semEnd, r => r && r[g.key + "Forecast"]);
     const targetLatest = row[g.key + "Prognosa"];
     const mode = getCapaianMode(capaianModes, g.key);
-    const pair = resolveCapaianPair(mode, capaianManualValues, g.key, row.bulan, realisasi, forecastValue, targetLatest);
+    const pair = resolveCapaianPair(mode, capaianManualValues, g.key, row.bulan, realisasi, forecastValue, targetLatest, getCapaianRules(capaianModes, g.key));
     const capaianPct = isProgFallback ? pair.capaianPrognosa : pair.capaianRealisasi;
     return {
       latest,
@@ -2004,7 +2104,7 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
       realisasi: realisasi,
       forecast: row.forecast
     };
-    const pair = resolveCapaianPair(mode, capaianManualValues, cat.id, row.bulan, capBase.realisasi, capBase.forecast, capBase.target);
+    const pair = resolveCapaianPair(mode, capaianManualValues, cat.id, row.bulan, capBase.realisasi, capBase.forecast, capBase.target, getCapaianRules(capaianModes, cat.id));
     const capaianPct = isProgFallback ? pair.capaianPrognosa : pair.capaianRealisasi;
     return {
       latest,
@@ -2160,7 +2260,7 @@ function computeTrendAtIndex(cat, rows, groupKey, monthIdx, capaianModes, capaia
       if (rv !== null && rv !== undefined) akumRealisasi = (akumRealisasi || 0) + rv;
       if (fv !== null && fv !== undefined) akumForecast = (akumForecast || 0) + fv;
     });
-    const akumPair = resolveCapaianPair(mode, capaianManualValues, cat.id, p, akumRealisasi, akumForecast, akumTarget);
+    const akumPair = resolveCapaianPair(mode, capaianManualValues, cat.id, p, akumRealisasi, akumForecast, akumTarget, getCapaianRules(capaianModes, cat.id));
     const capaianPct = isProgFallback ? akumPair.capaianPrognosa : akumPair.capaianRealisasi;
     return {
       latest: sum,
@@ -2371,7 +2471,7 @@ function StatCard({
   const capaianAkhirPct = useMemo(() => {
     if (!trend) return null;
     const modeKey = cat.type === "monthlyGrouped" ? groupKey || (cat.groups && cat.groups[0] ? cat.groups[0].key : cat.id) : cat.id;
-    return computeCapaianPct(getCapaianMode(capaianModes, modeKey), trend.prognosaAkhir, trend.targetAkhir);
+    return computeCapaianPct(getCapaianMode(capaianModes, modeKey), trend.prognosaAkhir, trend.targetAkhir, getCapaianRules(capaianModes, modeKey));
   }, [trend, cat, groupKey, capaianModes]);
   const capaianAkhirOk = capaianAkhirPct !== null && capaianAkhirPct !== undefined && capaianAkhirPct >= 100;
   const capaianAkhirBadge = extraCls => capaianAkhirPct === null || capaianAkhirPct === undefined ? null : /*#__PURE__*/React.createElement("span", {
@@ -4213,7 +4313,7 @@ function MonthlyGroupedTable({
       const target = r[g.key + "Prognosa"];
       const val = r[g.key + computedSuffix];
       const mode = getCapaianMode(capaianModes, g.key);
-      const pct = computeCapaianPct(mode, val, target);
+      const pct = computeCapaianPct(mode, val, target, getCapaianRules(capaianModes, g.key));
       const good = pct !== null && pct !== undefined && pct >= 100;
       return /*#__PURE__*/React.createElement("td", {
         key: sc.key,
@@ -5555,7 +5655,7 @@ function collectRedKpis(store, selectedYears, monthIdx) {
     if (!trend || trend.isProgFallback) return;
     if (trend.targetLatest === null || trend.targetLatest === undefined || !trend.targetLatest) return;
     const modeKey = m.cat.type === "monthlyGrouped" ? m.groupKey || m.catId : m.catId;
-    const capaianPct = trend.capaianPct !== null && trend.capaianPct !== undefined ? round1(trend.capaianPct) : computeCapaianPct(getCapaianMode(modes, modeKey), trend.latest, trend.targetLatest);
+    const capaianPct = trend.capaianPct !== null && trend.capaianPct !== undefined ? round1(trend.capaianPct) : computeCapaianPct(getCapaianMode(modes, modeKey), trend.latest, trend.targetLatest, getCapaianRules(modes, modeKey));
     if (capaianPct === null || capaianPct === undefined || capaianPct >= 100) return;
     results.push({
       key: "main-" + id,
@@ -5579,7 +5679,8 @@ function collectRedKpis(store, selectedYears, monthIdx) {
     rows.forEach(row => {
       const t = itemTrendAtIndex(row, QUARTERS, qIdx);
       if (!t || t.prognosa === null || t.prognosa === undefined || !t.prognosa) return;
-      const capaianPct = computeCapaianPct(getCapaianMode(modes, itemCapaianModeKey(bisnisCat, row.label || row.id)), t.value, t.prognosa);
+      const bKey = itemCapaianModeKey(bisnisCat, row.label || row.id);
+      const capaianPct = computeCapaianPct(getCapaianMode(modes, bKey), t.value, t.prognosa, getCapaianRules(modes, bKey));
       if (capaianPct === null || capaianPct === undefined || capaianPct >= 100) return;
       results.push({
         key: "bisnis-" + row.id,
@@ -5603,7 +5704,8 @@ function collectRedKpis(store, selectedYears, monthIdx) {
     rows.forEach(row => {
       const t = itemTrendAtIndex(row, MONTHS, monthIdx);
       if (!t || t.prognosa === null || t.prognosa === undefined || !t.prognosa) return;
-      const capaianPct = computeCapaianPct(getCapaianMode(modes, itemCapaianModeKey(lainnyaCat, row.label || row.id)), t.value, t.prognosa);
+      const lKey = itemCapaianModeKey(lainnyaCat, row.label || row.id);
+      const capaianPct = computeCapaianPct(getCapaianMode(modes, lKey), t.value, t.prognosa, getCapaianRules(modes, lKey));
       if (capaianPct === null || capaianPct === undefined || capaianPct >= 100) return;
       results.push({
         key: "lainnya-" + row.id,
@@ -6591,7 +6693,7 @@ function computeItemGroupedCapaianRows(cat, year, rows, capaianModes, capaianMan
     };
   });
   return monthly.map((m, i) => {
-    const pair = resolveCapaianPair(mode, capaianManualValues, cat.id, m.period, m.realisasi, m.prognosa, m.target);
+    const pair = resolveCapaianPair(mode, capaianManualValues, cat.id, m.period, m.realisasi, m.prognosa, m.target, getCapaianRules(capaianModes, cat.id));
     const capaianRealisasi = pair.capaianRealisasi;
     const capaianPrognosa = pair.capaianPrognosa;
     const usesFallback = m.realisasi === null || m.realisasi === undefined;
@@ -6621,7 +6723,7 @@ function computeProgramAOCapaianRows(rows, catId, capaianModes, capaianManualVal
     const target = r.akumTarget;
     const realisasi = r.akumRealisasi;
     const prognosa = r.akumForecast;
-    const pair = resolveCapaianPair(mode, capaianManualValues, catId, r.bulan, realisasi, prognosa, target);
+    const pair = resolveCapaianPair(mode, capaianManualValues, catId, r.bulan, realisasi, prognosa, target, getCapaianRules(capaianModes, catId));
     const capaianRealisasi = pair.capaianRealisasi;
     const capaianPrognosa = pair.capaianPrognosa;
     const usesFallback = realisasi === null || realisasi === undefined;
@@ -6762,7 +6864,7 @@ function computeKimiaCapaianRows(cat, year, rows, kpiTargets, capaianModes, capa
   const monthly = computeKimiaKpiRow(cat, year, rows, kpiTargets);
   const mode = getCapaianMode(capaianModes, "kimia");
   return monthly.map((m, i) => {
-    const pair = resolveCapaianPair(mode, capaianManualValues, "kimia", m.period, m.realisasi, m.prognosa, m.target);
+    const pair = resolveCapaianPair(mode, capaianManualValues, "kimia", m.period, m.realisasi, m.prognosa, m.target, getCapaianRules(capaianModes, "kimia"));
     const capaianRealisasi = pair.capaianRealisasi;
     const capaianPrognosa = pair.capaianPrognosa;
     const usesFallback = m.realisasi === null || m.realisasi === undefined;
@@ -6934,7 +7036,7 @@ function akumCapaianPair(cat, row, period, capaianModes, capaianManualValues, ta
   }
   const modeKey = akumCapaianModeKeyFor(cat, row);
   const mode = getCapaianMode(capaianModes, modeKey);
-  return resolveCapaianPair(mode, capaianManualValues, modeKey, period, realisasi, prognosa, target);
+  return resolveCapaianPair(mode, capaianManualValues, modeKey, period, realisasi, prognosa, target, getCapaianRules(capaianModes, modeKey));
 }
 function akumCapaianCell(value, extraCls) {
   const cls = "border-b border-slate-100 px-3 py-2 text-right tabular-nums " + (extraCls || "");
@@ -6965,7 +7067,7 @@ function computeLainnyaCapaianItemRows(cat, year, rows, capaianModes, capaianMan
       const target = r[p + "Prognosa"];
       const realisasi = r[p + "Realisasi"];
       const prognosa = r[p + "Forecast"];
-      const pair = resolveCapaianPair(mode, capaianManualValues, modeKey, p, realisasi, prognosa, target);
+      const pair = resolveCapaianPair(mode, capaianManualValues, modeKey, p, realisasi, prognosa, target, getCapaianRules(capaianModes, modeKey));
       const capaianRealisasi = pair.capaianRealisasi;
       const capaianPrognosa = pair.capaianPrognosa;
       const usesFallback = realisasi === null || realisasi === undefined;
@@ -8349,7 +8451,7 @@ function NkoFormulaRow({ node, onUpdate, disableManualRP, compact, hasSubItems, 
     ),
     E("div", { className: "ml-auto" }, isDeduction
       ? E("span", { className: "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-rose-50 text-rose-600" }, (deductionHasSubItems ? autoSumNilai : deductionNilai) === null ? "N/A" : fmtNum(deductionHasSubItems ? autoSumNilai : deductionNilai, 2))
-      : E(NkoPctBadge, { pct: nkoCappedPct(node, isLinked ? resolved && { rencana: resolved.rencana, realisasi: resolved.realisasi } : null) }))
+      : E(NkoPctBadge, { pct: nkoCappedPct(node, isLinked ? resolved && { rencana: resolved.rencana, realisasi: resolved.realisasi } : null, nkoStabilizeRulesFor(node, store)) }))
   );
 }
 
@@ -9040,7 +9142,7 @@ function buildPaparanSlides(store, nkoState, year, monthIdx) {
   const rawCapaian = (cat, row, period, target, realisasi, prognosa) => {
     const modeKey = itemCapaianModeKey(cat, row.label || row.id);
     const mode = getCapaianMode(store.capaianModes, modeKey);
-    return resolveCapaianPair(mode, store.capaianManualValues, modeKey, period, realisasi, prognosa, target);
+    return resolveCapaianPair(mode, store.capaianManualValues, modeKey, period, realisasi, prognosa, target, getCapaianRules(store.capaianModes, modeKey));
   };
   const pctTxt = v => v === null || v === undefined ? "-" : `${fmtNum(round1(v), 1)}%`;
   slides.push({
@@ -9690,6 +9792,144 @@ function LaporanPage({ nkoState, onChangeNkoState, selectedYears, store, readOnl
     }, E(Icon, { name: "chevron-down", size: 20, className: "rotate-180" }))
   );
 }
+// Prompt penerjemah: narasi aturan -> daftar aturan bertingkat (JSON).
+function buildStabilizePrompt(narasi, kpiLabel) {
+  return [
+    "Anda menerjemahkan ketentuan perhitungan %capaian KPI menjadi aturan terstruktur.",
+    "",
+    `KPI: ${kpiLabel || "-"}`,
+    "Variabel yang tersedia hanya `x`, yaitu Persen Realisasi = Realisasi / Target x 100 (mis. 98.5 berarti 98,5%).",
+    "",
+    "Keluarkan HANYA JSON valid, tanpa penjelasan dan tanpa pagar kode, dengan bentuk:",
+    '{"rules":[{"from":null,"to":98,"fromInc":false,"toInc":false,"expr":"(x / 98) * 100"}]}',
+    "",
+    "Ketentuan penulisan:",
+    "- Urutkan aturan dari rentang terkecil ke terbesar; aturan pertama yang cocok yang dipakai.",
+    "- `from`/`to` adalah batas persen realisasi. Pakai null untuk tak terbatas.",
+    "- `fromInc`/`toInc` true bila batas tersebut termasuk (>= atau <=).",
+    "- `expr` hanya boleh memakai angka, variabel x, tanda + - * / dan tanda kurung. Dilarang memakai fungsi, if, perbandingan, atau koma desimal (pakai titik).",
+    "- Hasil `expr` adalah %capaian dalam satuan persen (mis. 110 berarti 110%).",
+    "- Pastikan seluruh rentang 0 sampai tak terhingga tercakup dan tidak tumpang tindih.",
+    "",
+    "Ketentuan yang harus diterjemahkan:",
+    narasi || ""
+  ].join("\n");
+}
+function parseStabilizeAiResponse(text) {
+  let t = String(text || "").trim();
+  const fence = t.match(/```(?:json)?([\s\S]*?)```/i);
+  if (fence) t = fence[1].trim();
+  const start = t.indexOf("{");
+  const end = t.lastIndexOf("}");
+  if (start === -1 || end === -1) throw new Error("Jawaban AI tidak memuat JSON.");
+  const parsed = JSON.parse(t.slice(start, end + 1));
+  const rules = Array.isArray(parsed) ? parsed : parsed.rules;
+  if (!Array.isArray(rules) || !rules.length) throw new Error("Jawaban AI tidak memuat daftar aturan.");
+  return rules.map(r => ({
+    from: r.from === null || r.from === undefined || r.from === "" ? null : Number(r.from),
+    to: r.to === null || r.to === undefined || r.to === "" ? null : Number(r.to),
+    fromInc: !!r.fromInc,
+    toInc: !!r.toInc,
+    expr: String(r.expr || "").trim()
+  }));
+}
+function stabilizeRangeLabel(r) {
+  const from = r.from === null || r.from === undefined ? null : r.from;
+  const to = r.to === null || r.to === undefined ? null : r.to;
+  if (from === null && to === null) return "semua nilai";
+  if (from === null) return `x ${r.toInc ? "\u2264" : "<"} ${fmtNum(to, 2)}`;
+  if (to === null) return `x ${r.fromInc ? "\u2265" : ">"} ${fmtNum(from, 2)}`;
+  return `${fmtNum(from, 2)} ${r.fromInc ? "\u2264" : "<"} x ${r.toInc ? "\u2264" : "<"} ${fmtNum(to, 2)}`;
+}
+const STABILIZE_PROBES = [90, 95, 97, 98, 99, 100, 105, 110];
+// Editor mode Stabilize: narasi -> AI -> daftar aturan -> pratinjau uji -> simpan.
+function StabilizeEditor({ label, modeKey, value, onSave }) {
+  const E = React.createElement;
+  const [narasi, setNarasi] = useState((value && value.narasi) || "");
+  const [rules, setRules] = useState((value && value.rules) || []);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const warnings = rules.length ? validateStabilizeRules(rules) : [];
+  async function terjemahkan() {
+    if (!narasi.trim() || loading) return;
+    setError("");
+    setLoading(true);
+    try {
+      const live = await resolveAiSettings();
+      if (!live.enabled) { setError("Asisten AI dinonaktifkan. Aktifkan di Pengaturan AI."); return; }
+      const { provider, apiKey } = resolveAiProvider(live);
+      if (!apiKey) { setError(`Kunci API ${provider === "gemini" ? "Gemini" : "Claude"} belum tersedia.`); return; }
+      const prompt = buildStabilizePrompt(narasi, label);
+      const text = provider === "gemini"
+        ? await callGeminiAnalysis(apiKey, live.geminiModel, prompt)
+        : await callClaudeAnalysis(apiKey, live.claudeModel, prompt);
+      setRules(parseStabilizeAiResponse(text));
+    } catch (e) {
+      setError(e && e.message ? e.message : "Gagal menerjemahkan narasi.");
+    } finally {
+      setLoading(false);
+    }
+  }
+  const updRule = (i, patch) => setRules(rules.map((r, k) => k === i ? { ...r, ...patch } : r));
+  const numInput = (val, on, ph) => E("input", {
+    type: "number", step: "any", value: val === null || val === undefined ? "" : val, placeholder: ph,
+    onChange: e => on(e.target.value === "" ? null : Number(e.target.value)),
+    className: "w-16 text-[11px] border border-slate-200 rounded px-1.5 py-1 text-right"
+  });
+  return E("div", { className: "mt-2 border border-indigo-100 bg-indigo-50/40 rounded-xl p-3 space-y-2.5" },
+    E("p", { className: "text-[11px] text-slate-500 leading-relaxed" },
+      "Tulis ketentuan perhitungan seperti pada dokumen kontrak (poin per poin). Variabel yang dipakai adalah Persen Realisasi = Realisasi \u00f7 Target \u00d7 100."),
+    E("textarea", {
+      value: narasi, rows: 5,
+      placeholder: "1. Jika persen realisasi < 98%, maka capaian = (Persen Realisasi / 98) x 100%\n2. Jika 98% <= x <= 99%, maka capaian = ((10/100) x Persen Realisasi - 8,8) x 100%\n...",
+      onChange: e => setNarasi(e.target.value),
+      className: "w-full text-[11px] bg-white border border-slate-200 rounded-lg px-2.5 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-300"
+    }),
+    E("div", { className: "flex items-center gap-2 flex-wrap" },
+      E("button", {
+        type: "button", onClick: terjemahkan, disabled: loading || !narasi.trim(),
+        className: "inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1.5 rounded-full bg-violet-600 text-white hover:bg-violet-700 transition disabled:opacity-40"
+      }, E(Icon, { name: loading ? "activity" : "sparkles", size: 12 }), loading ? " Menerjemahkan..." : " Buat Rumus (AI)"),
+      rules.length > 0 && E("button", {
+        type: "button", onClick: () => onSave({ narasi, rules }),
+        className: "text-[11px] font-semibold px-2.5 py-1.5 rounded-full bg-[#0F2A3F] text-white hover:bg-[#16374f] transition"
+      }, "Simpan Aturan"),
+      rules.length > 0 && E("button", {
+        type: "button", onClick: () => setRules([]),
+        className: "text-[11px] font-semibold px-2.5 py-1.5 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200"
+      }, "Hapus Aturan")),
+    error && E("p", { className: "text-[11px] text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-2.5 py-1.5" }, error),
+    rules.length > 0 && E("div", { className: "space-y-1.5" },
+      E("p", { className: "text-[11px] font-semibold text-slate-500" }, "Aturan hasil terjemahan (dapat dikoreksi)"),
+      rules.map((r, i) => E("div", { key: i, className: "flex items-center gap-1.5 flex-wrap bg-white rounded-lg border border-slate-200 px-2 py-1.5" },
+        E("span", { className: "text-[10px] text-slate-400 w-4" }, i + 1),
+        numInput(r.from, v => updRule(i, { from: v }), "min"),
+        E("label", { className: "text-[10px] text-slate-500 flex items-center gap-0.5" },
+          E("input", { type: "checkbox", checked: !!r.fromInc, onChange: e => updRule(i, { fromInc: e.target.checked }) }), "\u2264"),
+        E("span", { className: "text-[10px] text-slate-400" }, "x"),
+        E("label", { className: "text-[10px] text-slate-500 flex items-center gap-0.5" },
+          E("input", { type: "checkbox", checked: !!r.toInc, onChange: e => updRule(i, { toInc: e.target.checked }) }), "\u2264"),
+        numInput(r.to, v => updRule(i, { to: v }), "maks"),
+        E("input", {
+          type: "text", value: r.expr, onChange: e => updRule(i, { expr: e.target.value }),
+          placeholder: "rumus, mis. (11 - (10/100) * x) * 100",
+          className: "flex-1 min-w-[160px] text-[11px] border border-slate-200 rounded px-2 py-1 font-mono"
+        }))),
+      E("div", { className: "bg-white rounded-lg border border-slate-200 p-2" },
+        E("p", { className: "text-[11px] font-semibold text-slate-500 mb-1" }, "Uji hasil"),
+        E("div", { className: "flex flex-wrap gap-1.5" },
+          STABILIZE_PROBES.map(x => {
+            const v = evalStabilizeRules(rules, x);
+            const good = v !== null && v >= 100;
+            return E("span", {
+              key: x,
+              className: `text-[10px] px-1.5 py-1 rounded ${v === null ? "bg-slate-100 text-slate-400" : good ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`
+            }, `${x}% \u2192 ${v === null ? "-" : fmtNum(v, 1) + "%"}`);
+          }))),
+      warnings.length > 0 && E("ul", { className: "text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-1.5 space-y-0.5" },
+        warnings.map((w, i) => E("li", { key: i }, "\u2022 ", w)))),
+    !rules.length && E("p", { className: "text-[11px] text-slate-400" }, "Belum ada aturan tersimpan \u2014 %capaian akan kosong sampai aturan dibuat."));
+}
 function TabTableManagerModal({ uiConfig, onChange, onClose, onAddTab, onRemoveTab, store, onAddYear, onDeleteYear, onCapaianModeChange }) {
   const E = React.createElement;
   const [expandedId, setExpandedId] = useState(null);
@@ -9907,17 +10147,26 @@ function TabTableManagerModal({ uiConfig, onChange, onClose, onAddTab, onRemoveT
       E("p", { className: "text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5" }, "Mode % Capaian"),
       isPerItem && E("p", { className: "text-xs text-slate-400 mb-1.5" }, "Daftar KPI pada tab ini dan mode perhitungan capaian masing-masing."),
       E("div", { className: "space-y-1.5" },
-        items.map(item => E("div", {
-          key: item.key,
-          className: "flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-slate-50"
-        },
-          E("span", { className: "text-sm text-slate-600 truncate" }, item.label),
-          E("select", {
-            value: getCapaianMode(store && store.capaianModes, item.key),
-            onChange: e => onCapaianModeChange && onCapaianModeChange(item.key, e.target.value),
-            className: "text-sm border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-300 bg-white flex-shrink-0"
-          }, CAPAIAN_MODE_OPTIONS.map(o => E("option", { key: o.key, value: o.key }, o.label)))
-        ))
+        items.map(item => {
+          const curMode = getCapaianMode(store && store.capaianModes, item.key);
+          return E("div", { key: item.key, className: "rounded-lg px-2 py-1.5 hover:bg-slate-50" },
+            E("div", { className: "flex items-center justify-between gap-2" },
+              E("span", { className: "text-sm text-slate-600 truncate" }, item.label),
+              E("select", {
+                value: curMode,
+                onChange: e => onCapaianModeChange && onCapaianModeChange(item.key, e.target.value),
+                className: "text-sm border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-300 bg-white flex-shrink-0"
+              }, CAPAIAN_MODE_OPTIONS.map(o => E("option", { key: o.key, value: o.key }, o.label)))),
+            curMode === "stabilize" && E(StabilizeEditor, {
+              label: item.label,
+              modeKey: item.key,
+              value: {
+                narasi: getCapaianNarasi(store && store.capaianModes, item.key),
+                rules: getCapaianRules(store && store.capaianModes, item.key) || []
+              },
+              onSave: payload => onCapaianModeChange && onCapaianModeChange(item.key, { mode: "stabilize", narasi: payload.narasi, rules: payload.rules })
+            }));
+        })
       )
     );
   }
@@ -12046,14 +12295,22 @@ function PerformUApp() {
       }
     }));
   };
+  // `mode` bisa berupa string (dari dropdown) atau objek { mode, narasi, rules } (mode Stabilize).
   const updateCapaianMode = (key, mode) => {
-    setStore(prev => ({
-      ...prev,
-      capaianModes: {
-        ...prev.capaianModes,
-        [key]: mode
+    setStore(prev => {
+      const prevVal = prev.capaianModes && prev.capaianModes[key];
+      let next;
+      if (mode && typeof mode === "object") {
+        next = mode;
+      } else if (mode === "stabilize") {
+        // Pertahankan narasi & aturan yang sudah pernah dibuat untuk KPI ini.
+        const keep = prevVal && typeof prevVal === "object" ? prevVal : {};
+        next = { mode: "stabilize", narasi: keep.narasi || "", rules: Array.isArray(keep.rules) ? keep.rules : [] };
+      } else {
+        next = mode;
       }
-    }));
+      return { ...prev, capaianModes: { ...prev.capaianModes, [key]: next } };
+    });
   };
   const updateCapaianManual = (modeKey, period, field, value) => {
     setStore(prev => {
