@@ -408,6 +408,9 @@ function nkoNewSubItem(overrides) {
     linkedCatId: "",
     linkedGroupKey: "",
     linkedRowLabel: "",
+    // Aturan mode Stabilize disimpan pada KPI-nya sendiri (sumber tunggal: Struktur & Bobot).
+    stabilizeNarasi: "",
+    stabilizeRules: [],
     ...overrides
   };
 }
@@ -426,6 +429,8 @@ function nkoNewItem(overrides) {
     linkedCatId: "",
     linkedGroupKey: "",
     linkedRowLabel: "",
+    stabilizeNarasi: "",
+    stabilizeRules: [],
     subItems: [],
     ...overrides
   };
@@ -839,10 +844,35 @@ function nkoCapaianModeKeyFor(node) {
   if (PER_ROW_CAPAIAN_CATS.includes(cat.id) && node.linkedRowLabel) return itemCapaianModeKey(cat, node.linkedRowLabel);
   return cat.id;
 }
-function nkoStabilizeRulesFor(node, store) {
-  const key = nkoCapaianModeKeyFor(node);
-  if (!key || !store) return null;
-  return getCapaianRules(store.capaianModes, key);
+// Aturan Stabilize melekat pada KPI di Struktur & Bobot — tidak lagi diambil dari setelan
+// terpisah, supaya hanya ada satu sumber kebenaran.
+function nkoStabilizeRulesFor(node) {
+  return node && Array.isArray(node.stabilizeRules) && node.stabilizeRules.length ? node.stabilizeRules : null;
+}
+// Peta mode %capaian untuk tabel Data Input / kartu Beranda, DITURUNKAN dari Struktur & Bobot.
+// Kunci peta memakai skema yang sama dengan sebelumnya (id kategori, kunci grup, atau
+// kombinasi kategori+baris), sehingga seluruh perhitungan capaian tidak perlu diubah.
+const NKO_TO_CAPAIAN_MODE = { normal: "normal", inverse: "inverse", direct: "direct", stabilize: "stabilize", deduction: "normal" };
+function buildCapaianModesFromNko(nkoState, year) {
+  const out = {};
+  if (!nkoState || !nkoState.byYear) return out;
+  const yearStructure = nkoState.byYear[year] || nkoState.byYear[Object.keys(nkoState.byYear)[0]];
+  const structure = nkoStructureForMonth(yearStructure, null);
+  if (!structure) return out;
+  const put = node => {
+    if (!node) return;
+    const key = nkoCapaianModeKeyFor(node);
+    if (!key) return;
+    const mode = NKO_TO_CAPAIAN_MODE[node.formulaType] || "normal";
+    out[key] = mode === "stabilize"
+      ? { mode, narasi: node.stabilizeNarasi || "", rules: Array.isArray(node.stabilizeRules) ? node.stabilizeRules : [] }
+      : mode;
+  };
+  (structure.categories || []).forEach(cat => (cat.items || []).forEach(item => {
+    put(item);
+    (item.subItems || []).forEach(put);
+  }));
+  return out;
 }
 function nkoComputePct(node, resolved, rules) {
   if (!node) return null;
@@ -1041,7 +1071,7 @@ function nkoComputeItemResult(item, weight, store, year, monthIdx, useForecast) 
   let subResults = null;
   let pct = null;
   const ownResolved = nkoResolveNode(item, store, year, monthIdx, useForecast);
-  const ownPct = nkoCappedPct(item, ownResolved, nkoStabilizeRulesFor(item, store));
+  const ownPct = nkoCappedPct(item, ownResolved, nkoStabilizeRulesFor(item));
   if (hasSubItems) {
     subResults = item.subItems.map(s => {
       if (s.formulaType === "deduction") {
@@ -1050,7 +1080,7 @@ function nkoComputeItemResult(item, weight, store, year, monthIdx, useForecast) 
         return { ...s, pct: null, nilai: sRealisasi === null || sRealisasi === undefined ? null : round4(-Math.abs(sRealisasi)), rencana: null, prognosa: sRealisasi };
       }
       const sResolved = nkoResolveNode(s, store, year, monthIdx, useForecast);
-      return { ...s, pct: nkoCappedPct(s, sResolved, nkoStabilizeRulesFor(s, store)), rencana: sResolved.rencana, prognosa: sResolved.realisasi };
+      return { ...s, pct: nkoCappedPct(s, sResolved, nkoStabilizeRulesFor(s)), rencana: sResolved.rencana, prognosa: sResolved.realisasi };
     });
     if (ownPct !== null) {
       // KPI utama punya rencana/realisasi (atau % manual) sendiri — dipakai langsung,
@@ -4986,7 +5016,14 @@ function TopNav({
     name: "presentation",
     size: 15,
     className: "text-slate-400"
-  }), "Pengaturan Paparan"))), /*#__PURE__*/React.createElement("div", {
+  }), "Pengaturan Paparan"), /*#__PURE__*/React.createElement("div", {
+    className: "px-2 pt-2 mt-1 border-t border-slate-100"
+  }, /*#__PURE__*/React.createElement("p", {
+    className: "text-[10px] text-slate-400 leading-relaxed",
+    title: "Tanggal berkas index.html yang sedang dimuat browser. Kalau tanggalnya lebih lama daripada berkas di komputer, browser masih memakai salinan lama \u2014 tekan Ctrl+F5."
+  }, "Versi berkas: ", /*#__PURE__*/React.createElement("span", {
+    className: "font-semibold text-slate-500"
+  }, typeof document !== "undefined" && document.lastModified ? document.lastModified : "-"))))), /*#__PURE__*/React.createElement("div", {
     className: "relative pl-1"
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => {
@@ -7827,8 +7864,7 @@ function AnalisaPage({
   onProgramAODeleteRow,
   onProgramAOReplaceRows,
   onKimiaKpiTargetChange,
-  onCapaianModeChange,
-  onCapaianManualChange,
+    onCapaianManualChange,
   uiConfig,
   nkoState
 }) {
@@ -8479,9 +8515,16 @@ function NkoFormulaRow({ node, onUpdate, disableManualRP, compact, hasSubItems, 
       E(NkoNumberInput, { value: node.capMax, onChange: v => onUpdate({ capMax: v }), className: "w-20" }),
       E("span", { className: "text-slate-400 text-xs" }, "%")
     ),
+    node.formulaType === "stabilize" && E("div", { className: "w-full" },
+      E(StabilizeEditor, {
+        label: node.label || "KPI ini",
+        modeKey: node.id,
+        value: { narasi: node.stabilizeNarasi || "", rules: Array.isArray(node.stabilizeRules) ? node.stabilizeRules : [] },
+        onSave: payload => onUpdate({ stabilizeNarasi: payload.narasi, stabilizeRules: payload.rules })
+      })),
     E("div", { className: "ml-auto" }, isDeduction
       ? E("span", { className: "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-rose-50 text-rose-600" }, (deductionHasSubItems ? autoSumNilai : deductionNilai) === null ? "N/A" : fmtNum(deductionHasSubItems ? autoSumNilai : deductionNilai, 2))
-      : E(NkoPctBadge, { pct: nkoCappedPct(node, isLinked ? resolved && { rencana: resolved.rencana, realisasi: resolved.realisasi } : null, nkoStabilizeRulesFor(node, store)) }))
+      : E(NkoPctBadge, { pct: nkoCappedPct(node, isLinked ? resolved && { rencana: resolved.rencana, realisasi: resolved.realisasi } : null, nkoStabilizeRulesFor(node)) }))
   );
 }
 
@@ -8670,19 +8713,21 @@ function nkoStructureToStructRows(structure) {
   (structure.categories || []).forEach(cat => {
     rows.push({
       level: "kategori", num: cat.num || "", label: cat.label || "", unit: cat.unit || "%",
-      weight: cat.weight || 0, formulaType: "", capMax: "", sourceType: "", linkedCatId: "", linkedGroupKey: "", linkedRowLabel: ""
+      weight: cat.weight || 0, formulaType: "", capMax: "", sourceType: "", linkedCatId: "", linkedGroupKey: "", linkedRowLabel: "", stabilize: ""
     });
     (cat.items || []).forEach(item => {
       rows.push({
         level: "item", num: "", label: item.label || "", unit: item.unit || "%",
         weight: item.weight || 0, formulaType: item.formulaType || "normal", capMax: item.capMax != null ? item.capMax : 110,
-        sourceType: item.sourceType || "manual", linkedCatId: item.linkedCatId || "", linkedGroupKey: item.linkedGroupKey || "", linkedRowLabel: item.linkedRowLabel || ""
+        sourceType: item.sourceType || "manual", linkedCatId: item.linkedCatId || "", linkedGroupKey: item.linkedGroupKey || "", linkedRowLabel: item.linkedRowLabel || "",
+        stabilize: item.formulaType === "stabilize" ? JSON.stringify({ narasi: item.stabilizeNarasi || "", rules: item.stabilizeRules || [] }) : ""
       });
       (item.subItems || []).forEach(sub => {
         rows.push({
           level: "sub", num: "", label: sub.label || "", unit: sub.unit || "%",
           weight: "", formulaType: sub.formulaType || "normal", capMax: sub.capMax != null ? sub.capMax : 110,
-          sourceType: sub.sourceType || "manual", linkedCatId: sub.linkedCatId || "", linkedGroupKey: sub.linkedGroupKey || "", linkedRowLabel: sub.linkedRowLabel || ""
+          sourceType: sub.sourceType || "manual", linkedCatId: sub.linkedCatId || "", linkedGroupKey: sub.linkedGroupKey || "", linkedRowLabel: sub.linkedRowLabel || "",
+          stabilize: sub.formulaType === "stabilize" ? JSON.stringify({ narasi: sub.stabilizeNarasi || "", rules: sub.stabilizeRules || [] }) : ""
         });
       });
     });
@@ -8722,11 +8767,11 @@ function exportNkoStructureToExcel(structure, year, store) {
     alert("Pustaka Excel belum termuat. Periksa koneksi internet lalu muat ulang halaman.");
     return;
   }
-  const header = ["Level (kategori/item/sub)", "No", "Nama", "Satuan", "Bobot", "Tipe Formula", "Cap Maksimum", "Sumber Data", "ID Tab Terhubung", "Kunci Grup Terhubung", "Baris Terhubung"];
+  const header = ["Level (kategori/item/sub)", "No", "Nama", "Satuan", "Bobot", "Tipe Formula", "Cap Maksimum", "Sumber Data", "ID Tab Terhubung", "Kunci Grup Terhubung", "Baris Terhubung", "Aturan Stabilize (JSON)"];
   const structRows = nkoStructureToStructRows(structure);
-  const aoa = [header, ...structRows.map(r => [r.level, r.num, r.label, r.unit, r.weight, r.formulaType, r.capMax, r.sourceType, r.linkedCatId, r.linkedGroupKey, r.linkedRowLabel])];
+  const aoa = [header, ...structRows.map(r => [r.level, r.num, r.label, r.unit, r.weight, r.formulaType, r.capMax, r.sourceType, r.linkedCatId, r.linkedGroupKey, r.linkedRowLabel, r.stabilize])];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"] = [{ wch: 12 }, { wch: 6 }, { wch: 34 }, { wch: 8 }, { wch: 8 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 34 }];
+  ws["!cols"] = [{ wch: 12 }, { wch: 6 }, { wch: 34 }, { wch: 8 }, { wch: 8 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 34 }, { wch: 40 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Struktur NKO");
   const refWs = XLSX.utils.aoa_to_sheet(buildNkoReferenceAoa(store, year));
@@ -8750,17 +8795,26 @@ function importNkoStructureFromAoa(aoa) {
     const linkedCatId = row[8] === null || row[8] === undefined ? "" : String(row[8]);
     const linkedGroupKey = row[9] === null || row[9] === undefined ? "" : String(row[9]);
     const linkedRowLabel = row[10] === null || row[10] === undefined ? "" : String(row[10]).trim();
+    // Aturan Stabilize dibawa sebagai JSON pada kolom terakhir agar ekspor-impor tidak kehilangannya.
+    let stabilizeNarasi = "", stabilizeRules = [];
+    if (row[11]) {
+      try {
+        const parsed = JSON.parse(String(row[11]));
+        stabilizeNarasi = typeof parsed.narasi === "string" ? parsed.narasi : "";
+        stabilizeRules = Array.isArray(parsed.rules) ? parsed.rules : [];
+      } catch (e) {}
+    }
     if (level === "kategori") {
       curCat = nkoNewCategory({ num: row[1] || (categories.length + 1), label, weight: weight || 0, unit, items: [] });
       categories.push(curCat);
       curItem = null;
     } else if (level === "item") {
       if (!curCat) { curCat = nkoNewCategory({ num: categories.length + 1, label: "Kategori", weight: 0, unit: "%", items: [] }); categories.push(curCat); }
-      curItem = nkoNewItem({ label, unit, weight: weight || 0, formulaType, capMax, sourceType, linkedCatId, linkedGroupKey, linkedRowLabel, subItems: [] });
+      curItem = nkoNewItem({ label, unit, weight: weight || 0, formulaType, capMax, sourceType, linkedCatId, linkedGroupKey, linkedRowLabel, stabilizeNarasi, stabilizeRules, subItems: [] });
       curCat.items.push(curItem);
     } else if (level === "sub") {
       if (!curItem) return;
-      curItem.subItems.push(nkoNewSubItem({ label, unit, formulaType, capMax, sourceType, linkedCatId, linkedGroupKey, linkedRowLabel }));
+      curItem.subItems.push(nkoNewSubItem({ label, unit, formulaType, capMax, sourceType, linkedCatId, linkedGroupKey, linkedRowLabel, stabilizeNarasi, stabilizeRules }));
     }
   });
   return { categories };
@@ -9962,7 +10016,7 @@ function StabilizeEditor({ label, modeKey, value, onSave }) {
         warnings.map((w, i) => E("li", { key: i }, "\u2022 ", w)))),
     !rules.length && E("p", { className: "text-[11px] text-slate-400" }, "Belum ada aturan tersimpan \u2014 %capaian akan kosong sampai aturan dibuat."));
 }
-function TabTableManagerModal({ uiConfig, onChange, onClose, onAddTab, onRemoveTab, store, onAddYear, onDeleteYear, onCapaianModeChange }) {
+function TabTableManagerModal({ uiConfig, onChange, onClose, onAddTab, onRemoveTab, store, onAddYear, onDeleteYear }) {
   const E = React.createElement;
   const [expandedId, setExpandedId] = useState(null);
   const [renamingId, setRenamingId] = useState(null);
@@ -10145,64 +10199,9 @@ function TabTableManagerModal({ uiConfig, onChange, onClose, onAddTab, onRemoveT
     );
   }
 
-  function capaianModeItemsForCat(cat) {
-    if (cat.id === "nko") return [];
-    if (cat.type === "monthlyGrouped") {
-      return (cat.groups || []).map(g => ({ key: g.key, label: g.label }));
-    }
-    if (cat.id === "bisnis" || cat.id === "lainnya") {
-      const years = store && store[cat.id] && store[cat.id].years ? store[cat.id].years.slice().sort((a, b) => a - b) : [];
-      const seen = {};
-      const items = [];
-      years.forEach(y => {
-        const rows = (store[cat.id].byYear[y] || []);
-        rows.forEach(r => {
-          const label = r.label || "-";
-          if (seen[label]) return;
-          seen[label] = true;
-          items.push({ key: itemCapaianModeKey(cat, r.label || r.id), label });
-        });
-      });
-      return items;
-    }
-    if (CAPAIAN_ITEM_CATS.includes(cat.id) || cat.id === "kimia" || CAPAIAN_PROGRAMAO_CATS.includes(cat.id)) {
-      return [{ key: cat.id, label: tabTitle(cat, uiConfig && uiConfig.tabs ? uiConfig.tabs.find(t => t.id === cat.id) : null) }];
-    }
-    return [];
-  }
-
-  function renderCapaianModeSection(tab, cat) {
-    const items = capaianModeItemsForCat(cat);
-    if (!items.length) return null;
-    const isPerItem = cat.id === "bisnis" || cat.id === "lainnya";
-    return E("div", { key: "capaianMode", className: "mt-3" },
-      E("p", { className: "text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5" }, "Mode % Capaian"),
-      isPerItem && E("p", { className: "text-xs text-slate-400 mb-1.5" }, "Daftar KPI pada tab ini dan mode perhitungan capaian masing-masing."),
-      E("div", { className: "space-y-1.5" },
-        items.map(item => {
-          const curMode = getCapaianMode(store && store.capaianModes, item.key);
-          return E("div", { key: item.key, className: "rounded-lg px-2 py-1.5 hover:bg-slate-50" },
-            E("div", { className: "flex items-center justify-between gap-2" },
-              E("span", { className: "text-sm text-slate-600 truncate" }, item.label),
-              E("select", {
-                value: curMode,
-                onChange: e => onCapaianModeChange && onCapaianModeChange(item.key, e.target.value),
-                className: "text-sm border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-300 bg-white flex-shrink-0"
-              }, CAPAIAN_MODE_OPTIONS.map(o => E("option", { key: o.key, value: o.key }, o.label)))),
-            curMode === "stabilize" && E(StabilizeEditor, {
-              label: item.label,
-              modeKey: item.key,
-              value: {
-                narasi: getCapaianNarasi(store && store.capaianModes, item.key),
-                rules: getCapaianRules(store && store.capaianModes, item.key) || []
-              },
-              onSave: payload => onCapaianModeChange && onCapaianModeChange(item.key, { mode: "stabilize", narasi: payload.narasi, rules: payload.rules })
-            }));
-        })
-      )
-    );
-  }
-
+  // Mode % Capaian tidak lagi diatur di sini. Sumber tunggalnya adalah
+  // Laporan > Struktur & Bobot (kolom rumus tiap KPI), lalu diturunkan otomatis ke
+  // tabel Data Input, kartu Beranda, menu Analisa, dan slide Paparan.
   return E("div", {
     className: "fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-[2px] flex items-center justify-center p-4",
     onClick: e => { if (e.target === e.currentTarget) onClose(); }
@@ -10364,8 +10363,7 @@ function TabTableManagerModal({ uiConfig, onChange, onClose, onAddTab, onRemoveT
                   })
                 )
               }),
-              renderCapaianModeSection(tab, cat),
-              !(tab.subTabs || []).length && !(tab.columns || []).length && !isMonthlyGrouped && !capaianModeItemsForCat(cat).length && E("p", { className: "text-xs text-slate-400 py-1" }, "Tidak ada sub tab atau kolom yang dapat diatur untuk tab ini.")
+              !(tab.subTabs || []).length && !(tab.columns || []).length && !isMonthlyGrouped && E("p", { className: "text-xs text-slate-400 py-1" }, "Tidak ada sub tab atau kolom yang dapat diatur untuk tab ini.")
             )
           );
         }),
@@ -11917,6 +11915,13 @@ function PerformUApp() {
     const t = setTimeout(() => setBootReady(true), 10000);
     return () => clearTimeout(t);
   }, [authUser]);
+  // Store yang dipakai untuk TAMPILAN: sama dengan store asli, hanya `capaianModes`-nya
+  // diturunkan dari Laporan > Struktur & Bobot. Store asli (tanpa turunan) tetap dipakai untuk
+  // penyimpanan/sinkronisasi ke server.
+  const viewStore = useMemo(() => ({
+    ...store,
+    capaianModes: buildCapaianModesFromNko(nkoState, selectedYears.nko)
+  }), [store, nkoState, selectedYears.nko]);
   const [tabTableManagerOpen, setTabTableManagerOpen] = useState(false);
   const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
   const [paparanSettingsOpen, setPaparanSettingsOpen] = useState(false);
@@ -12327,23 +12332,6 @@ function PerformUApp() {
       }
     }));
   };
-  // `mode` bisa berupa string (dari dropdown) atau objek { mode, narasi, rules } (mode Stabilize).
-  const updateCapaianMode = (key, mode) => {
-    setStore(prev => {
-      const prevVal = prev.capaianModes && prev.capaianModes[key];
-      let next;
-      if (mode && typeof mode === "object") {
-        next = mode;
-      } else if (mode === "stabilize") {
-        // Pertahankan narasi & aturan yang sudah pernah dibuat untuk KPI ini.
-        const keep = prevVal && typeof prevVal === "object" ? prevVal : {};
-        next = { mode: "stabilize", narasi: keep.narasi || "", rules: Array.isArray(keep.rules) ? keep.rules : [] };
-      } else {
-        next = mode;
-      }
-      return { ...prev, capaianModes: { ...prev.capaianModes, [key]: next } };
-    });
-  };
   const updateCapaianManual = (modeKey, period, field, value) => {
     setStore(prev => {
       const fullKey = manualCapaianKey(modeKey, period);
@@ -12409,7 +12397,7 @@ function PerformUApp() {
   }), /*#__PURE__*/React.createElement("main", {
     className: "flex-1 w-full max-w-[1800px] mx-auto px-4 sm:px-6 lg:px-10 py-6 lg:py-8 overflow-x-hidden"
   }, effectiveMenu === "beranda" && /*#__PURE__*/React.createElement(BerandaPage, {
-    store: store,
+    store: viewStore,
     selectedYears: selectedYears,
     setYear: setYear,
     setYearAll: setYearAll,
@@ -12423,7 +12411,7 @@ function PerformUApp() {
   }), isAdmin && effectiveMenu === "data-input" && /*#__PURE__*/React.createElement(AnalisaPage, {
     activeCatId: activeCatId,
     setActiveCatId: setActiveCatId,
-    store: store,
+    store: viewStore,
     selectedYears: selectedYears,
     setYear: setYear,
     addYear: addYear,
@@ -12438,12 +12426,11 @@ function PerformUApp() {
     onProgramAODeleteRow: deleteProgramAORow,
     onProgramAOReplaceRows: replaceProgramAORows,
     onKimiaKpiTargetChange: updateKimiaKpiTarget,
-    onCapaianModeChange: updateCapaianMode,
     onCapaianManualChange: updateCapaianManual,
     uiConfig: uiConfig,
     nkoState: nkoState
   }), effectiveMenu === "analisa" && /*#__PURE__*/React.createElement(AnalisaInsightPage, {
-    store: store,
+    store: viewStore,
     nkoState: nkoState,
     selectedYears: selectedYears,
     setYear: setYear,
@@ -12458,7 +12445,7 @@ function PerformUApp() {
     nkoState: nkoState,
     onChangeNkoState: updateNkoState,
     selectedYears: selectedYears,
-    store: store,
+    store: viewStore,
     readOnly: !isAdmin
   })), isAdmin && tabTableManagerOpen && /*#__PURE__*/React.createElement(TabTableManagerModal, {
     uiConfig: uiConfig,
@@ -12466,10 +12453,9 @@ function PerformUApp() {
     onClose: () => setTabTableManagerOpen(false),
     onAddTab: addCustomTab,
     onRemoveTab: removeCustomTab,
-    store: store,
+    store: viewStore,
     onAddYear: addYear,
     onDeleteYear: deleteYearFor,
-    onCapaianModeChange: updateCapaianMode
   }), isAdmin && paparanSettingsOpen && /*#__PURE__*/React.createElement(PaparanSettingsModal, {
     uiConfig: uiConfig,
     onChange: updateUiConfig,
