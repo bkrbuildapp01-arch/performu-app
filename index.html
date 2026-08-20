@@ -908,6 +908,13 @@ function nkoLinkedValues(node, store, year, monthIdx) {
   if (cat.type === "monthlySimple") {
     const row = mIdx !== null ? rows[mIdx] : rows.filter(r => r.realisasi !== null && r.realisasi !== undefined).slice(-1)[0];
     if (!row) return null;
+    // Fisik Pemeliharaan & PRK Investasi Terkontrak dinilai secara KUMULATIF (jumlah program
+    // s.d. bulan berjalan), sama seperti kartu Beranda dan slide Paparan. Memakai angka bulanan
+    // membuat capaian pada Form NKO tidak sebanding dengan targetnya.
+    if (PROGRAM_AKUM_CATS.includes(cat.id) && row.akumTarget !== undefined) {
+      const akumRealisasi = row.realisasi === null || row.realisasi === undefined ? null : row.akumRealisasi;
+      return { rencana: row.akumTarget, realisasi: akumRealisasi, forecast: row.akumForecast };
+    }
     return { rencana: row.target, realisasi: row.realisasi, forecast: row.forecast };
   }
   if (cat.type === "itemGrouped") {
@@ -1180,7 +1187,11 @@ function nkoComputeMonthlyRows(nkoState, store, year) {
     return {
       id: `${year}-${idx}`,
       bulan: `${m} ${year}`,
-      nkoPrognosa: realResult.totalWeight || null,
+      // Bobot efektif dihitung dari KPI yang capaiannya tersedia. Pada bulan yang belum punya
+      // realisasi, perhitungan berbasis realisasi membuat hampir semua KPI menjadi N/A sehingga
+      // bobotnya anjlok dan garis Target ikut turun. Untuk bulan seperti itu, garis Target
+      // memakai bobot dari perhitungan berbasis PROGNOSA.
+      nkoPrognosa: (hasRealisasi ? realResult.totalWeight : forecastResult.totalWeight) || null,
       nkoRealisasi: hasRealisasi ? realResult.totalNilai : null,
       nkoForecast: forecastResult.totalNilai
     };
