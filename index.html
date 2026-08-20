@@ -4614,7 +4614,9 @@ function ItemGroupedTable({
   onAddRow,
   onDeleteRow,
   hideFooterActions,
-  visiblePeriods
+  visiblePeriods,
+  capaianModes,
+  capaianManualValues
 }) {
   const {
     pendingId,
@@ -4640,14 +4642,23 @@ function ItemGroupedTable({
   const colSpanPerPeriod = showPercentCols ? 5 : 3;
   const periods = visiblePeriods && visiblePeriods.length ? visiblePeriods : cat.periods;
 
-  function pctCell(realisasi, target) {
-    const hasTarget = target !== null && target !== undefined && target !== 0;
-    const hasVal = realisasi !== null && realisasi !== undefined;
-    const value = hasTarget && hasVal ? round1(realisasi / target * 100) : null;
+  // %Capaian memakai rumus dari Laporan > Struktur & Bobot (Normal/Inverse/Langsung/Stabilize),
+  // bukan sekadar realisasi dibagi target, agar sama dengan kartu Beranda dan tab Capaian.
+  function pctCell(realisasi, target, row, period, isPrognosa) {
+    const modeKey = itemCapaianModeKey(cat, (row && (row.label || row.id)) || "");
+    const mode = getCapaianMode(capaianModes, modeKey);
+    let value;
+    if (mode === "direct") {
+      const manual = getManualCapaian(capaianManualValues, modeKey, period);
+      const v = isPrognosa ? manual.prognosa : manual.realisasi;
+      value = v === undefined || v === null ? null : round1(v);
+    } else {
+      value = computeCapaianPct(mode, realisasi, target, getCapaianRules(capaianModes, modeKey));
+    }
     return React.createElement(
       "td",
       { className: "border-b border-slate-100 px-3 py-1 text-right tabular-nums text-slate-500 bg-slate-50/40" },
-      value === null ? "-" : `${fmtNum(value, 1)}%`
+      value === null || value === undefined ? "-" : `${fmtNum(value, 1)}%`
     );
   }
 
@@ -4724,9 +4735,9 @@ function ItemGroupedTable({
           { key: p },
           targetCell,
           realisasiCell,
-          pctCell(realisasi, target),
+          pctCell(realisasi, target, r, p, false),
           prognosaCell,
-          pctCell(prognosa, target)
+          pctCell(prognosa, target, r, p, true)
         );
       }
       return React.createElement(React.Fragment, { key: p }, targetCell, realisasiCell, prognosaCell);
@@ -4823,7 +4834,8 @@ function DataTable({
   visibleCols,
   visiblePeriods,
   visibleGroupSubCols,
-  capaianModes
+  capaianModes,
+  capaianManualValues
 }) {
   if (cat.type === "monthlyGrouped") return /*#__PURE__*/React.createElement(MonthlyGroupedTable, {
     cat: cat,
@@ -4853,7 +4865,9 @@ function DataTable({
     onAddRow: onAddRow,
     onDeleteRow: onDeleteRow,
     hideFooterActions: hideFooterActions,
-    visiblePeriods: visiblePeriods
+    visiblePeriods: visiblePeriods,
+    capaianModes: capaianModes,
+    capaianManualValues: capaianManualValues
   });
 }
 function TopNav({
@@ -7119,9 +7133,11 @@ function akumCapaianCell(value, extraCls) {
 function itemCapaianModeKey(cat, rowIdOrLabel) {
   return `${cat.id}::${rowIdOrLabel}`;
 }
+// Kinerja Bisnis Proses & Kinerja Unit Lainnya menilai tiap KPI pada periodenya sendiri
+// (persentase/indeks), BUKAN akumulasi. Sebelumnya baris diakumulasikan lebih dulu sehingga
+// %capaian di Beranda berbeda dengan angka pada tabel Data Input.
 function computeLainnyaCapaianItemRows(cat, year, rows, capaianModes, capaianManualValues) {
-  const akumRows = accumulateItemRows(cat, rows);
-  return akumRows.map(function (r) {
+  return (rows || []).map(function (r) {
     const out = {
       id: r.id,
       label: r.label
@@ -8084,7 +8100,8 @@ function AnalisaPage({
     visibleCols: visibleCols,
     visiblePeriods: visiblePeriods,
     visibleGroupSubCols: visibleGroupSubCols,
-    capaianModes: store.capaianModes
+    capaianModes: store.capaianModes,
+    capaianManualValues: store.capaianManualValues
   })));
 }
 /* ============================================================
