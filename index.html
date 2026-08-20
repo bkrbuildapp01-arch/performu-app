@@ -3,6 +3,11 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<!-- Cegah browser menahan salinan lama halaman ini. Tanpa ini, perubahan aplikasi bisa tidak
+     terlihat sampai pengguna menekan Ctrl+F5 secara manual. -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
 <title>PerformU - Performance Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -867,11 +872,21 @@ function nkoCappedPct(node, resolved, rules) {
   if (cap === null || cap === undefined || cap === "" || Number.isNaN(cap)) return pct;
   return Math.min(pct, cap);
 }
+// `useForecast` punya tiga nilai:
+//   false      -> pakai kolom Realisasi (tab Hasil Perhitungan "Realisasi")
+//   true       -> pakai Realisasi bila ada, kalau belum ada baru Prognosa. Dipakai untuk garis
+//                 Prognosa pada grafik NKO, yang memang perkiraan terbaik sepanjang tahun.
+//   "strict"   -> SELALU pakai kolom Prognosa. Dipakai sub-tab "Prognosa" pada Hasil Perhitungan,
+//                 karena kolomnya memang berjudul Prognosa — bukan campuran dengan realisasi.
 function nkoResolveNode(node, store, year, monthIdx, useForecast) {
   if (node.sourceType === "linked" && store) {
     const live = nkoLinkedValues(node, store, year, monthIdx);
     if (live) {
-      const realisasiVal = useForecast ? (live.realisasi !== null && live.realisasi !== undefined ? live.realisasi : live.forecast) : live.realisasi;
+      const realisasiVal = useForecast === "strict"
+        ? live.forecast
+        : useForecast
+          ? (live.realisasi !== null && live.realisasi !== undefined ? live.realisasi : live.forecast)
+          : live.realisasi;
       return { rencana: live.rencana, realisasi: realisasiVal };
     }
   }
@@ -8471,7 +8486,9 @@ function NkoFormulaRow({ node, onUpdate, disableManualRP, compact, hasSubItems, 
 // data Prognosa (forecast) dan kolom "Realisasi" berganti nama menjadi "Prognosa".
 function NkoHasilTab({ structure, year, monthIdx, unitName, store, mode }) {
   const E = React.createElement;
-  const useForecast = mode === "prognosa";
+  // "strict": sub-tab Prognosa menampilkan kolom Prognosa apa adanya, tanpa disubstitusi
+  // realisasi pada bulan yang sudah terealisasi.
+  const useForecast = mode === "prognosa" ? "strict" : false;
   const valueColLabel = useForecast ? "Prognosa" : "Realisasi";
   const result = useMemo(() => nkoComputeStructureResult(structure, store, year, monthIdx, useForecast), [structure, store, year, monthIdx, useForecast]);
   const monthLabel = monthIdx !== null && monthIdx !== undefined ? MONTHS[monthIdx] : null;
