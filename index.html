@@ -2773,7 +2773,8 @@ function MetricChart({
   headerControls,
   detailData,
   dataTitleSuffix,
-  capaianPctList
+  capaianPctList,
+  valueIsCapaian
 }) {
   const realColor = lineColor || "#008C4F";
   const chartData = series;
@@ -2925,9 +2926,16 @@ function MetricChart({
   // %Capaian per bulan yang sama persis dengan tabel Capaian di Data Input, sehingga
   // polaritas (Normal/Inverse/Langsung/Stabilize) ikut terpakai. Bila daftar itu tidak
   // tersedia untuk KPI tsb, dipakai rasio realisasi terhadap target.
-  const capListEntry = capaianPctList && activeIdx !== null && activeIdx !== undefined ? capaianPctList[activeIdx] : null;
+  // KPI yang nilainya SUDAH berupa angka capaian (mis. NKO) memakai angka pada grafik apa
+  // adanya, supaya keterangan sama persis dengan titik yang sedang dilihat dan dengan tabel
+  // di Data Input. KPI lain memakai daftar %Capaian per bulan.
+  const capListEntry = !valueIsCapaian && capaianPctList && activeIdx !== null && activeIdx !== undefined ? capaianPctList[activeIdx] : null;
   let capaianPct = null,
     capaianUp = true;
+  if (valueIsCapaian) {
+    const v = activeD ? (hasRealAtActive ? activeD.Realisasi : activeD.Forecast) : null;
+    if (v !== null && v !== undefined) capaianPct = roundByDecimals(v, 2);
+  }
   if (capListEntry) {
     const v = capListEntry.realisasi !== null && capListEntry.realisasi !== undefined ? capListEntry.realisasi : capListEntry.prognosa;
     if (v !== null && v !== undefined) capaianPct = roundByDecimals(v, 2);
@@ -2961,9 +2969,15 @@ function MetricChart({
   }
   // %Capaian prognosa sampai akhir semester. Bila daftar %Capaian tersedia, dipakai nilai
   // prognosa pada bulan terakhir semester agar polaritasnya sama dengan Data Input.
-  const capSemEntry = capaianPctList ? capaianPctList[semEnd2 - 1] : null;
+  const capSemEntry = !valueIsCapaian && capaianPctList ? capaianPctList[semEnd2 - 1] : null;
   let capaianPrognosaPct = capSemEntry && capSemEntry.prognosa !== null && capSemEntry.prognosa !== undefined ? roundByDecimals(capSemEntry.prognosa, 2) : null;
-  if (capaianPrognosaPct === null && targetAkhirSemHas && prognosaAkhirSemHas && targetAkhirSem) {
+  if (valueIsCapaian) {
+    // Nilai prognosa akhir semester sudah berupa angka capaian.
+    const dSem = chartData[semEnd2 - 1];
+    const vSem = dSem ? (dSem.Forecast !== null && dSem.Forecast !== undefined ? dSem.Forecast : dSem.Realisasi) : null;
+    capaianPrognosaPct = vSem === null || vSem === undefined ? null : roundByDecimals(vSem, 2);
+  }
+  if (capaianPrognosaPct === null && !valueIsCapaian && targetAkhirSemHas && prognosaAkhirSemHas && targetAkhirSem) {
     capaianPrognosaPct = roundByDecimals(prognosaAkhirSem / targetAkhirSem * 100, 2);
   }
   const capaianPrognosaUp = capaianPrognosaPct !== null && capaianPrognosaPct >= 100;
@@ -6340,6 +6354,9 @@ function BerandaPage({
     lineColor: mainMetric.lineColor,
     decimals: displayDecimalsFor(mainMetric.catId, mainCat.decimals),
     capaianPctList: mainCapaianPctList,
+    // Nilai NKO sendiri sudah merupakan angka capaian, jadi keterangan capaian memakai angka
+    // yang tampil pada grafik/Data Input, bukan hasil bagi terhadap bobot lagi.
+    valueIsCapaian: mainMetric.catId === "nko",
     years: store[mainMetric.catId].years,
     selectedYear: selectedYears[mainMetric.catId],
     onSelectYear: y => {
