@@ -874,10 +874,11 @@ function nkoCappedPct(node, resolved, rules) {
 }
 // `useForecast` punya tiga nilai:
 //   false      -> pakai kolom Realisasi (tab Hasil Perhitungan "Realisasi")
-//   true       -> pakai Realisasi bila ada, kalau belum ada baru Prognosa. Dipakai untuk garis
-//                 Prognosa pada grafik NKO, yang memang perkiraan terbaik sepanjang tahun.
-//   "strict"   -> SELALU pakai kolom Prognosa. Dipakai sub-tab "Prognosa" pada Hasil Perhitungan,
-//                 karena kolomnya memang berjudul Prognosa — bukan campuran dengan realisasi.
+//   true       -> pakai Realisasi bila ada, kalau belum ada baru Prognosa. Tidak lagi dipakai
+//                 di aplikasi; dipertahankan agar pemanggilan lama tetap aman.
+//   "strict"   -> SELALU pakai kolom Prognosa. Dipakai SEMUA tampilan Prognosa: sub-tab Prognosa
+//                 pada Hasil Perhitungan, garis Prognosa pada grafik NKO, kolom Prognosa pada
+//                 tab NKO Data Input, slide Paparan, dan konteks Chat — supaya angkanya seragam.
 function nkoResolveNode(node, store, year, monthIdx, useForecast) {
   if (node.sourceType === "linked" && store) {
     const live = nkoLinkedValues(node, store, year, monthIdx);
@@ -1198,7 +1199,10 @@ function nkoComputeMonthlyRows(nkoState, store, year) {
     if (!structure) return { id: `${year}-${idx}`, bulan: `${m} ${year}`, nkoPrognosa: null, nkoRealisasi: null, nkoForecast: null };
     const hasRealisasi = idx <= realisasiCutoff && nkoHasAnyRealisasiForMonth(structure, store, year, idx);
     const realResult = nkoComputeStructureResult(structure, store, year, idx, false);
-    const forecastResult = nkoComputeStructureResult(structure, store, year, idx, true);
+    // "strict": garis Prognosa memakai kolom Prognosa apa adanya, sama persis dengan sub-tab
+    // Prognosa pada Laporan > Hasil Perhitungan. Sebelumnya memakai `true` (realisasi bila ada,
+    // prognosa sebagai cadangan) sehingga angka di grafik berbeda dari angka di Laporan.
+    const forecastResult = nkoComputeStructureResult(structure, store, year, idx, "strict");
     return {
       id: `${year}-${idx}`,
       bulan: `${m} ${year}`,
@@ -10840,7 +10844,7 @@ function buildChatDataContext(store, nkoState, selectedYears) {
         if (!structure) return null;
         return {
           realisasi: nkoComputeStructureResult(structure, store, year, idx, false),
-          prognosa: nkoComputeStructureResult(structure, store, year, idx, true)
+          prognosa: nkoComputeStructureResult(structure, store, year, idx, "strict")
         };
       });
       const ref = perMonth.find(Boolean);
