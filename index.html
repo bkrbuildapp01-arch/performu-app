@@ -2920,17 +2920,23 @@ function MetricChart({
   const activeD = activePoint ? activePoint.d : null;
   const hasRealAtActive = !!(activeD && activeD.Realisasi !== null && activeD.Realisasi !== undefined);
   const hasTargetAtActive = !!(activeD && activeD.Prognosa !== null && activeD.Prognosa !== undefined);
+  // Dua baris ringkasan di bawah angka besar memakai MODEL PERSEN CAPAIAN (mis. 102,9%),
+  // bukan persen kenaikan/penurunan terhadap target (+2,9%). Sumber utamanya daftar
+  // %Capaian per bulan yang sama persis dengan tabel Capaian di Data Input, sehingga
+  // polaritas (Normal/Inverse/Langsung/Stabilize) ikut terpakai. Bila daftar itu tidak
+  // tersedia untuk KPI tsb, dipakai rasio realisasi terhadap target.
+  const capListEntry = capaianPctList && activeIdx !== null && activeIdx !== undefined ? capaianPctList[activeIdx] : null;
   let capaianPct = null,
     capaianUp = true;
-  if (activeD && hasTargetAtActive) {
-    if (hasRealAtActive) {
-      capaianPct = activeD.Prognosa ? round1((activeD.Realisasi - activeD.Prognosa) / activeD.Prognosa * 100) : 0;
-      capaianUp = activeD.Realisasi >= activeD.Prognosa;
-    } else if (activeD.Forecast !== null && activeD.Forecast !== undefined) {
-      capaianPct = activeD.Prognosa ? round1((activeD.Forecast - activeD.Prognosa) / activeD.Prognosa * 100) : 0;
-      capaianUp = activeD.Forecast >= activeD.Prognosa;
-    }
+  if (capListEntry) {
+    const v = capListEntry.realisasi !== null && capListEntry.realisasi !== undefined ? capListEntry.realisasi : capListEntry.prognosa;
+    if (v !== null && v !== undefined) capaianPct = round1(v);
   }
+  if (capaianPct === null && activeD && hasTargetAtActive && activeD.Prognosa) {
+    if (hasRealAtActive) capaianPct = round1(activeD.Realisasi / activeD.Prognosa * 100);
+    else if (activeD.Forecast !== null && activeD.Forecast !== undefined) capaianPct = round1(activeD.Forecast / activeD.Prognosa * 100);
+  }
+  capaianUp = capaianPct !== null && capaianPct >= 100;
   const semRefIdx = activeIdx !== null && activeIdx !== undefined ? activeIdx : peakIdx !== null && peakIdx !== undefined ? peakIdx : 0;
   const nHalf = n / 2;
   const semStart2 = semRefIdx < nHalf ? 0 : nHalf;
@@ -2942,17 +2948,25 @@ function MetricChart({
   for (let k = semStart2; k < semEnd2; k++) {
     const dv = chartData[k];
     if (!dv) continue;
-    if (dv.Prognosa !== null && dv.Prognosa !== undefined) {
-      targetAkhirSem += dv.Prognosa;
-      targetAkhirSemHas = true;
-    }
+    // Target dan prognosa dijumlahkan berpasangan: bulan tanpa angka prognosa tidak ikut
+    // menambah target, supaya rasionya tidak timpang.
     if (dv.Forecast !== null && dv.Forecast !== undefined) {
       prognosaAkhirSem += dv.Forecast;
       prognosaAkhirSemHas = true;
+      if (dv.Prognosa !== null && dv.Prognosa !== undefined) {
+        targetAkhirSem += dv.Prognosa;
+        targetAkhirSemHas = true;
+      }
     }
   }
-  const capaianPrognosaPct = targetAkhirSemHas && prognosaAkhirSemHas && targetAkhirSem ? round1((prognosaAkhirSem - targetAkhirSem) / targetAkhirSem * 100) : null;
-  const capaianPrognosaUp = prognosaAkhirSem >= targetAkhirSem;
+  // %Capaian prognosa sampai akhir semester. Bila daftar %Capaian tersedia, dipakai nilai
+  // prognosa pada bulan terakhir semester agar polaritasnya sama dengan Data Input.
+  const capSemEntry = capaianPctList ? capaianPctList[semEnd2 - 1] : null;
+  let capaianPrognosaPct = capSemEntry && capSemEntry.prognosa !== null && capSemEntry.prognosa !== undefined ? round1(capSemEntry.prognosa) : null;
+  if (capaianPrognosaPct === null && targetAkhirSemHas && prognosaAkhirSemHas && targetAkhirSem) {
+    capaianPrognosaPct = round1(prognosaAkhirSem / targetAkhirSem * 100);
+  }
+  const capaianPrognosaUp = capaianPrognosaPct !== null && capaianPrognosaPct >= 100;
   function selectPoint(series, idx) {
     setShowAllData(false);
     setActive({
@@ -3841,11 +3855,11 @@ function MetricChart({
     className: "text-[11px] leading-snug text-slate-500"
   }, /*#__PURE__*/React.createElement("span", {
     className: `font-semibold ${capaianUp ? "text-emerald-600" : "text-rose-600"}`
-  }, capaianPct >= 0 ? "+" : "-", Math.abs(capaianPct), "%"), " Capaian terhadap target"), capaianPrognosaPct !== null && /*#__PURE__*/React.createElement("p", {
+  }, fmtNum(capaianPct, 1), "%"), " Capaian terhadap target"), capaianPrognosaPct !== null && /*#__PURE__*/React.createElement("p", {
     className: "text-[11px] leading-snug text-slate-500"
   }, /*#__PURE__*/React.createElement("span", {
     className: `font-semibold ${capaianPrognosaUp ? "text-emerald-600" : "text-rose-600"}`
-  }, capaianPrognosaPct >= 0 ? "+" : "-", Math.abs(capaianPrognosaPct), "%"), " Prognosa Capaian terhadap target semester")));
+  }, fmtNum(capaianPrognosaPct, 1), "%"), " Prognosa Capaian terhadap target semester")));
   const showDataBtn = /*#__PURE__*/React.createElement("button", {
     onClick: () => setShowAllData(!showAllData),
     className: `inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full transition ${showAllData ? "bg-[#0F2A3F] text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`
