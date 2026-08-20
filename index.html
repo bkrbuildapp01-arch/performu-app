@@ -857,21 +857,36 @@ function buildCapaianModesFromNko(nkoState, year) {
   const out = {};
   if (!nkoState || !nkoState.byYear) return out;
   const yearStructure = nkoState.byYear[year] || nkoState.byYear[Object.keys(nkoState.byYear)[0]];
-  const structure = nkoStructureForMonth(yearStructure, null);
-  if (!structure) return out;
-  const put = node => {
-    if (!node) return;
-    const key = nkoCapaianModeKeyFor(node);
-    if (!key) return;
-    const mode = NKO_TO_CAPAIAN_MODE[node.formulaType] || "normal";
-    out[key] = mode === "stabilize"
-      ? { mode, narasi: node.stabilizeNarasi || "", rules: Array.isArray(node.stabilizeRules) ? node.stabilizeRules : [] }
-      : mode;
+  if (!yearStructure) return out;
+  const collect = (structure, isiKekosonganSaja) => {
+    if (!structure) return;
+    const put = node => {
+      if (!node) return;
+      const key = nkoCapaianModeKeyFor(node);
+      if (!key) return;
+      const sudahAda = out[key];
+      const masihKosong = sudahAda === undefined
+        || (sudahAda && sudahAda.mode === "stabilize" && !(sudahAda.rules || []).length);
+      if (isiKekosonganSaja && !masihKosong) return;
+      const mode = NKO_TO_CAPAIAN_MODE[node.formulaType] || "normal";
+      if (isiKekosonganSaja && mode === "stabilize" && !(Array.isArray(node.stabilizeRules) && node.stabilizeRules.length)) return;
+      out[key] = mode === "stabilize"
+        ? { mode, narasi: node.stabilizeNarasi || "", rules: Array.isArray(node.stabilizeRules) ? node.stabilizeRules : [] }
+        : mode;
+    };
+    (structure.categories || []).forEach(cat => (cat.items || []).forEach(item => {
+      put(item);
+      (item.subItems || []).forEach(put);
+    }));
   };
-  (structure.categories || []).forEach(cat => (cat.items || []).forEach(item => {
-    put(item);
-    (item.subItems || []).forEach(put);
-  }));
+  collect(nkoStructureForMonth(yearStructure, null), false);
+  // Bila rumus disusun saat sebuah BULAN sedang dipilih, penyesuaiannya tersimpan pada bulan
+  // tersebut. Tabel Data Input menampilkan 12 bulan sekaligus, jadi penyesuaian per bulan
+  // dipakai untuk mengisi KPI yang belum punya rumus di tingkat tahun — supaya rumus yang baru
+  // dibuat tetap terpakai dan tidak terlihat "hilang".
+  if (yearStructure.byMonth) {
+    Object.keys(yearStructure.byMonth).forEach(idx => collect(nkoStripMonthOverrides(yearStructure.byMonth[idx]), true));
+  }
   return out;
 }
 function nkoComputePct(node, resolved, rules) {
@@ -9946,13 +9961,23 @@ function stabilizeRangeLabel(r) {
 }
 const STABILIZE_PROBES = [90, 95, 97, 98, 99, 100, 105, 110];
 // Editor mode Stabilize: narasi -> AI -> daftar aturan -> pratinjau uji -> simpan.
+// Editor TERKENDALI: narasi dan aturan dibaca langsung dari KPI-nya dan setiap perubahan
+// langsung disimpan (tidak menunggu tombol Simpan). Dulu keduanya disimpan di state lokal,
+// sehingga hasil "Buat Rumus (AI)" hilang begitu komponen dirender ulang.
 function StabilizeEditor({ label, modeKey, value, onSave }) {
   const E = React.createElement;
-  const [narasi, setNarasi] = useState((value && value.narasi) || "");
-  const [rules, setRules] = useState((value && value.rules) || []);
+  const narasi = (value && value.narasi) || "";
+  const rules = (value && Array.isArray(value.rules) ? value.rules : []);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [savedAt, setSavedAt] = useState(0);
   const warnings = rules.length ? validateStabilizeRules(rules) : [];
+  const simpan = (nextNarasi, nextRules) => {
+    onSave({ narasi: nextNarasi, rules: nextRules });
+    setSavedAt(Date.now());
+  };
+  const setNarasi = v => simpan(v, rules);
+  const setRules = next => simpan(narasi, next);
   async function terjemahkan() {
     if (!narasi.trim() || loading) return;
     setError("");
@@ -9966,14 +9991,15 @@ function StabilizeEditor({ label, modeKey, value, onSave }) {
       const text = provider === "gemini"
         ? await callGeminiAnalysis(apiKey, live.geminiModel, prompt)
         : await callClaudeAnalysis(apiKey, live.claudeModel, prompt);
-      setRules(parseStabilizeAiResponse(text));
+      // Hasil terjemahan langsung disimpan pada KPI dan dipakai perhitungan.
+      simpan(narasi, parseStabilizeAiResponse(text));
     } catch (e) {
       setError(e && e.message ? e.message : "Gagal menerjemahkan narasi.");
     } finally {
       setLoading(false);
     }
   }
-  const updRule = (i, patch) => setRules(rules.map((r, k) => k === i ? { ...r, ...patch } : r));
+  const updRule = (i, patch) => simpan(narasi, rules.map((r, k) => k === i ? { ...r, ...patch } : r));
   const numInput = (val, on, ph) => E("input", {
     type: "number", step: "any", value: val === null || val === undefined ? "" : val, placeholder: ph,
     onChange: e => on(e.target.value === "" ? null : Number(e.target.value)),
@@ -9993,12 +10019,12 @@ function StabilizeEditor({ label, modeKey, value, onSave }) {
         type: "button", onClick: terjemahkan, disabled: loading || !narasi.trim(),
         className: "inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1.5 rounded-full bg-violet-600 text-white hover:bg-violet-700 transition disabled:opacity-40"
       }, E(Icon, { name: loading ? "activity" : "sparkles", size: 12 }), loading ? " Menerjemahkan..." : " Buat Rumus (AI)"),
+      rules.length > 0 && E("span", {
+        className: "inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1.5 rounded-full",
+        title: "Perubahan narasi dan aturan langsung tersimpan pada KPI ini"
+      }, E(Icon, { name: "check", size: 12 }), " Tersimpan otomatis"),
       rules.length > 0 && E("button", {
-        type: "button", onClick: () => onSave({ narasi, rules }),
-        className: "text-[11px] font-semibold px-2.5 py-1.5 rounded-full bg-[#0F2A3F] text-white hover:bg-[#16374f] transition"
-      }, "Simpan Aturan"),
-      rules.length > 0 && E("button", {
-        type: "button", onClick: () => setRules([]),
+        type: "button", onClick: () => simpan(narasi, []),
         className: "text-[11px] font-semibold px-2.5 py-1.5 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200"
       }, "Hapus Aturan")),
     error && E("p", { className: "text-[11px] text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-2.5 py-1.5" }, error),
@@ -10031,7 +10057,8 @@ function StabilizeEditor({ label, modeKey, value, onSave }) {
           }))),
       warnings.length > 0 && E("ul", { className: "text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-1.5 space-y-0.5" },
         warnings.map((w, i) => E("li", { key: i }, "\u2022 ", w)))),
-    !rules.length && E("p", { className: "text-[11px] text-slate-400" }, "Belum ada aturan tersimpan \u2014 %capaian akan kosong sampai aturan dibuat."));
+    !rules.length && E("p", { className: "text-[11px] text-slate-400" }, "Belum ada aturan tersimpan \u2014 %capaian akan kosong sampai aturan dibuat."),
+    savedAt > 0 && null);
 }
 function TabTableManagerModal({ uiConfig, onChange, onClose, onAddTab, onRemoveTab, store, onAddYear, onDeleteYear }) {
   const E = React.createElement;
